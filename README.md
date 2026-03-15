@@ -1,6 +1,6 @@
 # CF Pinterest Parser
 
-Автоматически парсит товары с Creative Fabrica, создаёт Pinterest-пины (1000×1500 px)
+Автоматически парсит товары с Creative Fabrica, создаёт уникальные Pinterest-пины (1000×1500 px)
 и записывает всё в Google Sheets. Запускается ежедневно в 09:00 UTC через GitHub Actions.
 
 ---
@@ -10,9 +10,12 @@
 ```
 1. Playwright (headless Chrome) открывает страницы CF по категориям
 2. JS-скрипт извлекает: название, slug, URL картинки, URL товара
-3. Pillow скачивает картинку и создаёт Pinterest-пин → output/{slug}.jpg
-4. Новые товары записываются в Google Sheets (дубли пропускаются по slug)
-5. Повторяется для 7 категорий, 3 страницы каждая (по умолчанию)
+3. Картинка обрабатывается:
+   - если запущен ComfyUI → img2img (SD 1.5, denoising 0.5) → уникальная версия
+   - иначе → используется оригинал с CF
+4. Pillow накладывает overlay: название, бейдж категории, CTA → output/{slug}.jpg
+5. Новые товары записываются в Google Sheets (дубли пропускаются по slug)
+6. Повторяется для 7 категорий, 3 страницы каждая (по умолчанию)
 ```
 
 ---
@@ -22,8 +25,9 @@
 ```
 cf-pinterest-parser/
 ├── main.py               # точка входа
-├── parser.py             # Playwright-скрапер CF
-├── image_processor.py    # обработка картинок (Pillow → Pinterest-пины)
+├── parser.py             # Playwright-скрапер CF (новый браузер на каждую страницу)
+├── comfy_processor.py    # ComfyUI img2img + Pillow overlay → output/{slug}.jpg
+├── image_processor.py    # устаревший Pillow-only вариант (не используется)
 ├── sheets.py             # чтение/запись Google Sheets
 ├── config.py             # константы и env-переменные
 ├── requirements.txt
@@ -61,12 +65,10 @@ playwright install chromium
 5. Создать JSON-ключ:
    - Открыть созданный аккаунт → вкладка **Keys** → **Add Key → Create new key → JSON**
    - Скачать файл → переименовать в `credentials.json`
-   - Положить в корень проекта (`E:\code\cf-pinterest-parser\credentials.json`)
+   - Положить в корень проекта (`cf-pinterest-parser/credentials.json`)
 6. Дать доступ к Google Sheet:
-   - Открыть свой Google Sheet
-   - Нажать **Поделиться** (Share)
-   - Вставить `client_email` из `credentials.json` (выглядит как `cf-parser@project.iam.gserviceaccount.com`)
-   - Права: **Редактор (Editor)**
+   - Открыть свой Google Sheet → **Поделиться**
+   - Вставить `client_email` из `credentials.json` → права **Редактор**
 
 ### Шаг 3. Настроить переменные окружения
 
@@ -90,17 +92,17 @@ python main.py
 ```
 
 **Что произойдёт:**
-- Подключится к Google Sheets (smoke-test: запишет и сотрёт тестовую строку)
-- Создаст 7 вкладок если их нет: fonts, graphics, 3d-svg, 3d-printing, embroidery, laser-cutting, bundles
+- Подключится к Google Sheets (smoke-test)
+- Создаст 7 вкладок: fonts, graphics, 3d-svg, 3d-printing, embroidery, laser-cutting, bundles
 - Спарсит по 3 страницы каждой категории через headless Chrome
-- Скачает картинки и создаст Pinterest-пины в папке `output/`
+- Создаст Pinterest-пины в папке `output/`
 - Запишет новые товары в шит, пропустит дубли
 
 ---
 
 ## Первоначальный массовый сбор
 
-Для первого запуска соберите больше товаров (потом крон сам добавляет новинки):
+Для первого запуска соберите больше товаров:
 
 **Windows (cmd):**
 ```cmd
@@ -112,11 +114,53 @@ set PAGES_PER_RUN=50 && python main.py
 PAGES_PER_RUN=50 python main.py
 ```
 
-| Страниц | Товаров/категорию | Время/категорию | Итого (7 ниш) |
-|---|---|---|---|
-| 3 (дефолт) | ~156 | ~1 мин | ~7 мин |
-| 20 | ~700 | ~4 мин | ~28 мин |
-| 50 | ~1800 | ~8 мин | ~1 час |
+| Страниц | Товаров/категорию | Итого (7 ниш) |
+|---|---|---|
+| 3 (дефолт) | ~156 | ~7 мин |
+| 20 | ~700 | ~28 мин |
+| 50 | ~1800 | ~1 час |
+
+> ⚠️ `set PAGES_PER_RUN=50` сохраняется до закрытия cmd-окна.
+> Для сброса: `set PAGES_PER_RUN=3 && python main.py`
+
+---
+
+## Уникализация изображений через ComfyUI (опционально)
+
+Если ComfyUI запущен локально, каждая картинка автоматически прогоняется через
+**Stable Diffusion img2img** (denoising 0.5) — Pinterest получает уникальные изображения.
+Если ComfyUI не запущен, скрипт молча переходит в Pillow-only режим.
+
+### Установка ComfyUI
+
+```bash
+git clone https://github.com/comfyanonymous/ComfyUI
+cd ComfyUI
+pip install -r requirements.txt
+```
+
+Скачать модель (SD 1.5, бесплатно):
+- [RealisticVision v5.1](https://civitai.com/models/4201) → положить в `ComfyUI/models/checkpoints/`
+
+### Запуск
+
+```bash
+# Терминал 1 — ComfyUI
+cd ComfyUI && python main.py --listen
+
+# Терминал 2 — парсер (сам подхватит ComfyUI)
+cd cf-pinterest-parser && python main.py
+```
+
+### Настройка ComfyUI в .env
+
+```env
+COMFY_URL=http://127.0.0.1:8188
+COMFY_MODEL=realisticVisionV51.safetensors
+COMFY_DENOISE=0.50
+COMFY_STEPS=20
+COMFY_CFG=7.0
+```
 
 ---
 
@@ -133,20 +177,9 @@ PAGES_PER_RUN=50 python main.py
 | `cf_url` | Прямая ссылка на страницу товара |
 | `affiliate_url` | Аффилиатная ссылка (`/ref/7029352/?sharedfrom=pdp`) |
 | `slug` | Slug товара — ключ для дедупликации |
-| `posted` | `FALSE` по умолчанию; вручную или скриптом меняется на `TRUE` после пина |
-| `pin_id` | ID пина в Pinterest (заполняется после публикации) |
+| `posted` | `FALSE` по умолчанию; меняется на `TRUE` после публикации пина |
+| `pin_id` | ID пина в Pinterest (заполняется после постинга) |
 | `created_at` | Дата/время добавления строки (UTC) |
-
----
-
-## Обработка изображений (Pillow)
-
-Для каждого товара создаётся файл `output/{slug}.jpg`:
-
-- Размер: **1000×1500 px** (соотношение 2:3 — оптимально для Pinterest)
-- Верхние 65%: картинка товара с CF
-- Нижние 35%: тёмная плашка — название, бейдж категории, CTA "Free Today with All Access"
-- Уже существующие файлы не перегенерируются (идемпотентно)
 
 ---
 
@@ -154,7 +187,7 @@ PAGES_PER_RUN=50 python main.py
 
 ### Добавить секреты
 
-В репозитории: **Settings → Secrets and variables → Actions → New repository secret**
+**Settings → Secrets and variables → Actions → New repository secret**
 
 | Секрет | Значение |
 |---|---|
@@ -162,28 +195,28 @@ PAGES_PER_RUN=50 python main.py
 | `GOOGLE_SHEET_ID` | `1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg` |
 | `CF_AFFILIATE_ID` | `7029352` |
 
-Как получить содержимое `credentials.json`:
 ```bash
+# Получить содержимое credentials.json:
 cat credentials.json
-# скопировать весь JSON (от { до }) и вставить как значение секрета
+# Скопировать весь JSON и вставить как значение секрета GOOGLE_CREDENTIALS
 ```
 
 ### Расписание
 
 - **Автоматически:** каждый день в 09:00 UTC
-- **Вручную:** Actions → CF Pinterest Parser → Run workflow (кнопка)
+- **Вручную:** Actions → CF Pinterest Parser → Run workflow
 
 ---
 
 ## Добавить новую категорию
 
-Открыть `config.py`, добавить строку в словарь `CATEGORIES`:
+Открыть `config.py`, добавить строку в `CATEGORIES`:
 
 ```python
 "new-niche": "https://www.creativefabrica.com/new-niche/",
 ```
 
-При следующем запуске вкладка в шите создастся автоматически.
+Вкладка в шите создастся автоматически при следующем запуске.
 
 ---
 
@@ -213,7 +246,11 @@ output/            # сгенерированные Pinterest-пины
 
 ## Известные особенности
 
-- **Playwright вместо requests** — CF использует Cloudflare и React SPA, обычные HTTP-запросы получают 403
-- **Страница 1 vs страницы 2+** — страница 1 (~84 товара) содержит секции "Popular" и "New releases", страницы 2+ (~36 товаров) — чистый пагинированный список
-- **SSL warning при старте** — `SSLEOFError` при первом обращении к Google API — это нормально, gspread делает retry автоматически
-- **Аффилиатная ссылка** — формат `https://www.creativefabrica.com/product/{slug}/ref/7029352/?sharedfrom=pdp`
+- **Playwright вместо requests** — CF за Cloudflare, обычные HTTP дают 403
+- **Новый браузер на каждую страницу** — иначе CF блокирует страницу 2+
+- **Страница 1 fonts** — ~84 товара (Popular + New), страницы 2+ — ~36 каждая
+- **Lazy-load скролл** — embroidery/bundles/laser-cutting грузят карточки только после скролла
+- **noscript title bug** — для некоторых категорий `textContent` возвращает сырой HTML;
+  исправлено через извлечение `alt` атрибута regex'ом
+- **ComfyUI fallback** — если ComfyUI недоступен, изображения создаются без AI
+- **SSL warning при старте** — `SSLEOFError` от gspread нормален, авторетрай встроен

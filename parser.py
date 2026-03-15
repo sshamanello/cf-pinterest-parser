@@ -81,48 +81,56 @@ def parse_category(url: str, niche: str, pages: int = PAGES_PER_RUN) -> list[dic
     seen_slugs: set[str] = set()  # dedup across pages within one run
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            viewport={"width": 1280, "height": 900},
-            locale="en-US",
-        )
-        page_obj = context.new_page()
-
-        # Block fonts/videos to speed up page loads
-        page_obj.route(
-            "**/*.{mp4,webm,woff,woff2,ttf,otf}",
-            lambda route: route.abort()
-        )
-
         for page_num in range(1, pages + 1):
             page_url = _build_page_url(url, page_num)
             logger.info("[%s] Fetching page %d: %s", niche, page_num, page_url)
 
-            try:
-                page_obj.goto(page_url, wait_until="domcontentloaded", timeout=30_000)
+            # Fresh browser per page — avoids Cloudflare session-level rate limiting
+            browser = pw.chromium.launch(headless=True)
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 900},
+                locale="en-US",
+            )
+            page_obj = context.new_page()
+            page_obj.route(
+                "**/*.{mp4,webm,woff,woff2,ttf,otf}",
+                lambda route: route.abort()
+            )
 
-                # Scroll down gradually to trigger lazy-loaded product cards
-                # (embroidery, bundles, graphics use infinite scroll / lazy load)
-                for scroll_pos in [300, 600, 1000, 1500, 2500, 4000]:
-                    page_obj.evaluate(f"window.scrollTo(0, {scroll_pos})")
-                    page_obj.wait_for_timeout(400)
+            loaded = False
+            for attempt in range(1, 3):  # up to 2 attempts per page
+                try:
+                    page_obj.goto(page_url, wait_until="domcontentloaded", timeout=30_000)
 
-                # Wait until at least one product link is present
-                page_obj.wait_for_selector('a[href*="/product/"]', timeout=20_000)
+                    # Scroll down gradually to trigger lazy-loaded product cards
+                    for scroll_pos in [300, 600, 1000, 1500, 2500, 4000]:
+                        page_obj.evaluate(f"window.scrollTo(0, {scroll_pos})")
+                        page_obj.wait_for_timeout(400)
 
-            except PlaywrightTimeoutError:
-                logger.warning("[%s] Timeout on page %d — no products appeared.", niche, page_num)
+                    page_obj.wait_for_selector('a[href*="/product/"]', timeout=20_000)
+                    loaded = True
+                    break
+
+                except PlaywrightTimeoutError:
+                    if attempt == 1:
+                        logger.warning("[%s] Timeout on page %d (attempt %d), retrying in 8s...", niche, page_num, attempt)
+                        time.sleep(8)
+                    else:
+                        logger.warning("[%s] Timeout on page %d — no products appeared.", niche, page_num)
+                except Exception as exc:
+                    logger.error("[%s] Failed to load page %d: %s", niche, page_num, exc)
+                    break
+
+            raw: list[dict] = page_obj.evaluate(_EXTRACT_JS) if loaded else []
+            browser.close()
+
+            if not loaded:
                 break
-            except Exception as exc:
-                logger.error("[%s] Failed to load page %d: %s", niche, page_num, exc)
-                break
-
-            raw: list[dict] = page_obj.evaluate(_EXTRACT_JS)
 
             if not raw:
                 logger.info("[%s] No products on page %d, stopping.", niche, page_num)
@@ -153,7 +161,5 @@ def parse_category(url: str, niche: str, pages: int = PAGES_PER_RUN) -> list[dic
                 delay = random.uniform(MIN_DELAY, MAX_DELAY)
                 logger.debug("[%s] Sleeping %.1f s before next page.", niche, delay)
                 time.sleep(delay)
-
-        browser.close()
 
     return all_products
