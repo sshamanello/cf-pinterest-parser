@@ -30,19 +30,22 @@ _EXTRACT_JS = """
         const slug = m[1];
 
         const img = link.querySelector('img');
-        const title = link.textContent.trim();
+        // data-src = lazy-loaded (graphics/other), src = already loaded (fonts)
+        const imgSrc = img ? (img.dataset.src || img.src || '') : '';
+
+        // textContent on image links can include <noscript> inner HTML as a text node.
+        // Filter it out: a real title never starts with "<".
+        const rawText = link.textContent.trim();
+        const title = rawText.startsWith('<') ? '' : rawText;
 
         if (!seen.has(slug)) {
             seen.add(slug);
-            results.push({
-                slug,
-                href,
-                imgSrc: img ? img.src : '',
-                title: title || ''
-            });
+            results.push({ slug, href, imgSrc, title });
         } else if (title) {
             const entry = results.find(r => r.slug === slug);
             if (entry && !entry.title) entry.title = title;
+            // also pick up imgSrc if missing from first pass
+            if (entry && !entry.imgSrc && imgSrc) entry.imgSrc = imgSrc;
         }
     }
     return results;
@@ -114,13 +117,14 @@ def parse_category(url: str, niche: str, pages: int = PAGES_PER_RUN) -> list[dic
             for item in raw:
                 slug = item.get("slug", "")
                 cf_url = item.get("href", "")
-                if not slug or not cf_url or slug in seen_slugs:
+                image_url = item.get("imgSrc", "")
+                if not slug or not cf_url or not image_url or slug in seen_slugs:
                     continue
                 seen_slugs.add(slug)
                 title = item.get("title") or slug.replace("-", " ").title()
                 page_products.append({
                     "title": title,
-                    "image_url": item.get("imgSrc", ""),
+                    "image_url": image_url,
                     "cf_url": cf_url,
                     "affiliate_url": AFFILIATE_URL_TEMPLATE.format(slug=slug, affiliate_id=CF_AFFILIATE_ID),
                     "slug": slug,
