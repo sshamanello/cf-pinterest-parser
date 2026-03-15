@@ -3,7 +3,7 @@ import random
 import time
 
 from config import CATEGORIES, MIN_DELAY, MAX_DELAY
-from image_processor import process_products
+from comfy_processor import process_products
 from parser import parse_category
 from sheets import append_products, ensure_tabs, get_sheet_client, test_connection
 
