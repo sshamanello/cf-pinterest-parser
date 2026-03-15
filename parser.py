@@ -34,9 +34,16 @@ _EXTRACT_JS = """
         const imgSrc = img ? (img.dataset.src || img.src || '') : '';
 
         // textContent on image links can include <noscript> inner HTML as a text node.
-        // Filter it out: a real title never starts with "<".
+        // If it starts with "<" it's raw HTML — extract alt attribute instead.
         const rawText = link.textContent.trim();
-        const title = rawText.startsWith('<') ? '' : rawText;
+        let title = '';
+        if (rawText.startsWith('<')) {
+            // Try to extract alt="..." from the raw HTML string
+            const altMatch = rawText.match(/alt="([^"]+)"/);
+            title = altMatch ? altMatch[1] : (img ? img.alt : '');
+        } else {
+            title = rawText;
+        }
 
         if (!seen.has(slug)) {
             seen.add(slug);
@@ -98,8 +105,16 @@ def parse_category(url: str, niche: str, pages: int = PAGES_PER_RUN) -> list[dic
 
             try:
                 page_obj.goto(page_url, wait_until="domcontentloaded", timeout=30_000)
+
+                # Scroll down gradually to trigger lazy-loaded product cards
+                # (embroidery, bundles, graphics use infinite scroll / lazy load)
+                for scroll_pos in [300, 600, 1000, 1500, 2500, 4000]:
+                    page_obj.evaluate(f"window.scrollTo(0, {scroll_pos})")
+                    page_obj.wait_for_timeout(400)
+
                 # Wait until at least one product link is present
-                page_obj.wait_for_selector('a[href*="/product/"]', timeout=15_000)
+                page_obj.wait_for_selector('a[href*="/product/"]', timeout=20_000)
+
             except PlaywrightTimeoutError:
                 logger.warning("[%s] Timeout on page %d — no products appeared.", niche, page_num)
                 break
