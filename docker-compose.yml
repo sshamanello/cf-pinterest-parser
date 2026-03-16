@@ -1,8 +1,10 @@
 services:
   cf-parser:
     build: .
+    container_name: cf-parser
     env_file: .env
     volumes:
-      - ./output:/app/output           # сохранять пины на хосте
+      - ./output:/app/output                          # пины сохраняются на хосте
       - ./credentials.json:/app/credentials.json:ro  # ключ Google (read-only)
-    restart: "no"                      # запускается по крону, не демон
+    shm_size: '1gb'    # Chromium требует увеличенного /dev/shm
+    restart: "no"      # запускается по cron, не как демон

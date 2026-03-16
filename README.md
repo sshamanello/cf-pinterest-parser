@@ -183,28 +183,72 @@ COMFY_CFG=7.0
 
 ---
 
-## GitHub Actions — автоматический запуск
+## Деплой на сервер (Docker + cron)
 
-### Добавить секреты
+### Требования
+- Linux VPS с Docker и Docker Compose
+- `credentials.json` от Google Service Account
 
-**Settings → Secrets and variables → Actions → New repository secret**
-
-| Секрет | Значение |
-|---|---|
-| `GOOGLE_CREDENTIALS` | Полное содержимое файла `credentials.json` |
-| `GOOGLE_SHEET_ID` | `1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg` |
-| `CF_AFFILIATE_ID` | `7029352` |
+### Шаг 1. Клонировать репо на сервер
 
 ```bash
-# Получить содержимое credentials.json:
-cat credentials.json
-# Скопировать весь JSON и вставить как значение секрета GOOGLE_CREDENTIALS
+git clone https://github.com/sshamanello/cf-pinterest-parser
+cd cf-pinterest-parser
 ```
 
-### Расписание
+### Шаг 2. Создать `.env`
 
-- **Автоматически:** каждый день в 09:00 UTC
-- **Вручную:** Actions → CF Pinterest Parser → Run workflow
+```bash
+cp .env.example .env
+nano .env
+```
+
+```env
+GOOGLE_SHEET_ID=1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg
+CF_AFFILIATE_ID=7029352
+GOOGLE_CREDENTIALS_PATH=credentials.json
+PAGES_PER_RUN=3
+```
+
+### Шаг 3. Положить `credentials.json`
+
+```bash
+# Скопировать файл на сервер (с локальной машины):
+scp credentials.json user@your-server:/path/to/cf-pinterest-parser/
+```
+
+### Шаг 4. Собрать Docker-образ
+
+```bash
+docker compose build
+```
+
+### Шаг 5. Тестовый запуск
+
+```bash
+docker compose run --rm cf-parser
+```
+
+Должно вывести логи парсинга и записать строки в Google Sheet.
+
+### Шаг 6. Настроить cron
+
+```bash
+crontab -e
+```
+
+Добавить строку (запуск каждый день в 09:00):
+
+```
+0 9 * * * cd /path/to/cf-pinterest-parser && docker compose run --rm cf-parser >> /var/log/cf-parser.log 2>&1
+```
+
+### Обновление кода
+
+```bash
+git pull
+docker compose build   # пересобрать образ после изменений
+```
 
 ---
 

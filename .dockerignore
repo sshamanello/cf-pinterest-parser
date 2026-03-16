@@ -1,0 +1,10 @@
+.env
+credentials.json
+output/
+.git/
+__pycache__/
+*.pyc
+*.pyo
+README.md
+CLAUDE.md
+.dockerignore
