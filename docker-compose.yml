@@ -1,0 +1,8 @@
+services:
+  cf-parser:
+    build: .
+    env_file: .env
+    volumes:
+      - ./output:/app/output           # сохранять пины на хосте
+      - ./credentials.json:/app/credentials.json:ro  # ключ Google (read-only)
+    restart: "no"                      # запускается по крону, не демон

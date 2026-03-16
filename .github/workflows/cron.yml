@@ -1,9 +1,7 @@
-name: CF Pinterest Parser
+name: CF Pinterest Parser (manual only)
 
 on:
-  schedule:
-    - cron: "0 9 * * *"   # daily at 09:00 UTC
-  workflow_dispatch:        # allow manual trigger
+  workflow_dispatch:   # только ручной запуск через GitHub UI
 
 jobs:
   parse:
