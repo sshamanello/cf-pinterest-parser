@@ -21,6 +21,7 @@ import sys
 
 from config import CATEGORIES
 from comfy_processor import process_products, create_pin
+from extractor import run_batch
 from parser import parse_category
 from sheets import append_products, ensure_tabs, get_sheet_client, test_connection
 
@@ -122,6 +123,21 @@ def cmd_test():
         logger.info("[OK] Pin created: %s", path)
 
 
+def cmd_extract(input_path: str, output_root: str = "output"):
+    """Extract transparent overlays from preview image(s)."""
+    logger.info("Mode: extract overlays")
+    logger.info("Input: %s", input_path)
+    logger.info("Output root: %s", output_root)
+
+    results = run_batch(input_path, output_root=output_root)
+    if not results:
+        logger.warning("[!] No images processed")
+        return
+
+    manual_count = sum(1 for r in results if r.needs_manual_check)
+    logger.info("[OK] Processed: %d | manual_check: %d", len(results), manual_count)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="CF Pinterest Parser - quick launcher",
@@ -131,11 +147,13 @@ Commands:
   parse    Full cycle: parse -> pins -> sheets (default)
   pins     Pins only
   test     Test: one category, one page
+  extract  Remove background and save transparent overlays
 
 Examples:
   python run.py parse                          # all, 3 pages
   python run.py parse --niche fonts --pages 10 # fonts only, 10 pages
   python run.py test                            # test
+  python run.py extract --input ./previews      # extraction only
         """,
     )
 
@@ -156,6 +174,19 @@ Examples:
     p_pins.add_argument("--all", "-a", action="store_true", help="All pages (50)")
 
     subparsers.add_parser("test", help="Test")
+    p_extract = subparsers.add_parser("extract", help="Extract transparent overlays")
+    p_extract.add_argument(
+        "--input",
+        "-i",
+        required=True,
+        help="File or folder with source preview images",
+    )
+    p_extract.add_argument(
+        "--output",
+        "-o",
+        default="output",
+        help="Output root folder (default: output)",
+    )
 
     args = parser.parse_args()
 
@@ -165,6 +196,8 @@ Examples:
         cmd_pins(niche=args.niche, all_pages=vars(args).get("all", False))
     elif args.command == "test":
         cmd_test()
+    elif args.command == "extract":
+        cmd_extract(input_path=args.input, output_root=args.output)
     else:
         parser.print_help()
         sys.exit(1)
