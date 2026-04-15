@@ -12,6 +12,15 @@
 
 ## Изменения 2026-04-15
 
+- Создана отдельная экспериментальная ветка: `codex/signature-lock-comfy-experiment` для безопасной проверки нового подхода с возможностью отката.
+- Проверен текущий ComfyUI workflow `DreamShaperXL.json`:
+  - это `txt2img` граф (`EmptyLatentImage -> KSampler -> VAEDecode -> SaveImage`),
+  - исходное превью шрифта в граф не подаётся,
+  - значит текущий workflow генерирует новый визуал, но не гарантирует похожесть на исходный продаваемый шрифт.
+- Для режима “уникальный, но похожий” в следующей итерации нужен `signature-lock`:
+  - выделяем главный текст/wordmark из исходника,
+  - в ComfyUI генерируем только фон (negative prompt: `text/letters/words`),
+  - поверх фона накладываем исходный signature-слой без деформации.
 - Внедрён универсальный `QC rule-engine` для масштабной пакетной обработки:
   - новые QC-метрики в отчёте: `noise_score`, `stroke_loss_score`, `edge_artifact_score`, `component_count`,
   - решение по каждому файлу: `qc_decision` (`PASS` / `RETRY` / `MANUAL_CHECK`),
