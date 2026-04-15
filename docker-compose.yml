@@ -1,4 +1,5 @@
 services:
+  # Режим 1: Разовый запуск (docker compose run --rm cf-parser)
   cf-parser:
     build: .
     container_name: cf-parser
@@ -7,4 +8,19 @@ services:
       - ./output:/app/output                          # пины сохраняются на хосте
       - ./credentials.json:/app/credentials.json:ro  # ключ Google (read-only)
     shm_size: '1gb'    # Chromium требует увеличенного /dev/shm
-    restart: "no"      # запускается по cron, не как демон
+    restart: "no"      # запускается вручную или по внешнему cron
+  
+  # Режим 2: Cron-демон внутри контейнера (docker compose up -d cf-parser-cron)
+  cf-parser-cron:
+    build: .
+    container_name: cf-parser-cron
+    env_file: .env
+    environment:
+      - CRON_SCHEDULE=0 9 * * *  # 09:00 UTC ежедневно (можно переопределить в .env)
+    volumes:
+      - ./output:/app/output
+      - ./credentials.json:/app/credentials.json:ro
+      - ./logs:/var/log  # логи cron на хосте
+    shm_size: '1gb'
+    restart: unless-stopped  # автоперезапуск при падении
+    command: ["/docker-entrypoint.sh", "cron"]

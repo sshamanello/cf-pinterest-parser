@@ -1,7 +1,37 @@
 # CF Pinterest Parser
 
-Автоматически парсит товары с Creative Fabrica, создаёт уникальные Pinterest-пины (1000×1500 px)
-и записывает всё в Google Sheets. Запускается ежедневно в 09:00 UTC через GitHub Actions.
+Автоматически парсит товары с Creative Fabrica, создаёт Pinterest-пины (1000×1500 px)
+и записывает всё в Google Sheets.
+
+**🐳 Docker + ⚡ Makefile** — быстрый запуск на любом устройстве.
+
+---
+
+## Быстрый старт 🚀
+
+```bash
+# 1. Клонировать
+git clone https://github.com/sshamanello/cf-pinterest-parser
+cd cf-pinterest-parser
+
+# 2. Настроить .env и credentials.json
+cp .env.example .env
+# Отредактируйте .env и добавьте credentials.json
+
+# 3. Запустить!
+make parse                    # парсинг + пины + шит (3 стр.)
+make parse-50                 # массовый сбор (50 стр.)
+make test                     # тест (1 стр. fonts)
+```
+
+**Или через Docker:**
+```bash
+make build                    # собрать образ (один раз)
+make run                      # разовый запуск
+make cron                     # автоматический cron-демон
+```
+
+**Все команды:** `make help`
 
 ---
 
@@ -24,19 +54,27 @@
 
 ```
 cf-pinterest-parser/
-├── main.py               # точка входа
-├── parser.py             # Playwright-скрапер CF (новый браузер на каждую страницу)
-├── comfy_processor.py    # ComfyUI img2img + Pillow overlay → output/{slug}.jpg
-├── image_processor.py    # устаревший Pillow-only вариант (не используется)
-├── sheets.py             # чтение/запись Google Sheets
-├── config.py             # константы и env-переменные
+├── main.py                 # точка входа
+├── parser.py               # Playwright-скрапер CF (новый браузер на каждую страницу)
+├── comfy_processor.py      # ComfyUI img2img + Pillow overlay → output/{slug}.jpg
+├── image_processor.py      # устаревший Pillow-only вариант (не используется)
+├── sheets.py               # чтение/запись Google Sheets
+├── config.py               # константы и env-переменные
 ├── requirements.txt
-├── .env.example          # шаблон переменных окружения
+├── .env.example            # шаблон переменных окружения
+├── Dockerfile              # образ контейнера
+├── docker-compose.yml      # конфигурация Docker (два сервиса)
+├── docker-entrypoint.sh    # entrypoint с поддержкой cron
+├── .dockerignore           # исключения из образа
+├── DOCKER.md               # полная Docker-документация
+├── DOCKER_QUICKSTART.md    # шпаргалка по Docker
 ├── .gitignore
-├── CLAUDE.md             # инструкции для AI-ассистентов
+├── CLAUDE.md               # инструкции для AI-ассистентов
+├── INIT.md                 # быстрый контекст проекта
+├── test_components.py      # тестирование компонентов
 └── .github/
     └── workflows/
-        └── cron.yml      # GitHub Actions cron (09:00 UTC ежедневно)
+        └── cron.yml        # GitHub Actions cron (09:00 UTC ежедневно)
 ```
 
 ---
@@ -104,13 +142,17 @@ python main.py
 
 Для первого запуска соберите больше товаров:
 
-**Windows (cmd):**
-```cmd
-set PAGES_PER_RUN=50 && python main.py
+**Через Docker:**
+```bash
+docker compose run --rm -e PAGES_PER_RUN=50 cf-parser
 ```
 
-**macOS / Linux:**
+**Через Python (локально):**
 ```bash
+# Windows
+set PAGES_PER_RUN=50 && python main.py
+
+# macOS / Linux
 PAGES_PER_RUN=50 python main.py
 ```
 
@@ -183,72 +225,37 @@ COMFY_CFG=7.0
 
 ---
 
-## Деплой на сервер (Docker + cron)
+## Деплой на сервер (Docker)
 
-### Требования
-- Linux VPS с Docker и Docker Compose
-- `credentials.json` от Google Service Account
-
-### Шаг 1. Клонировать репо на сервер
+### Вариант 1: Docker с встроенным cron (рекомендуется)
 
 ```bash
+# На сервере
 git clone https://github.com/sshamanello/cf-pinterest-parser
 cd cf-pinterest-parser
-```
 
-### Шаг 2. Создать `.env`
-
-```bash
+# Создать .env и credentials.json
 cp .env.example .env
 nano .env
+nano credentials.json
+
+# Собрать и запустить cron-демон
+docker compose build
+docker compose up -d cf-parser-cron
+
+# Проверить логи
+docker compose logs -f cf-parser-cron
+tail -f logs/cf-parser.log
 ```
+
+**Настройка расписания:** отредактируйте `CRON_SCHEDULE` в `.env`
 
 ```env
-GOOGLE_SHEET_ID=1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg
-CF_AFFILIATE_ID=7029352
-GOOGLE_CREDENTIALS_PATH=credentials.json
-PAGES_PER_RUN=3
+CRON_SCHEDULE=0 9 * * *     # 09:00 UTC ежедневно (по умолчанию)
+CRON_SCHEDULE=0 */6 * * *   # каждые 6 часов
 ```
 
-### Шаг 3. Положить `credentials.json`
-
-```bash
-# Скопировать файл на сервер (с локальной машины):
-scp credentials.json user@your-server:/path/to/cf-pinterest-parser/
-```
-
-### Шаг 4. Собрать Docker-образ
-
-```bash
-docker compose build
-```
-
-### Шаг 5. Тестовый запуск
-
-```bash
-docker compose run --rm cf-parser
-```
-
-Должно вывести логи парсинга и записать строки в Google Sheet.
-
-### Шаг 6. Настроить cron
-
-```bash
-crontab -e
-```
-
-Добавить строку (запуск каждый день в 09:00):
-
-```
-0 9 * * * cd /path/to/cf-pinterest-parser && docker compose run --rm cf-parser >> /var/log/cf-parser.log 2>&1
-```
-
-### Обновление кода
-
-```bash
-git pull
-docker compose build   # пересобрать образ после изменений
-```
+**Подробнее:** см. [DOCKER.md](DOCKER.md)
 
 ---
 
@@ -282,9 +289,10 @@ docker compose build   # пересобрать образ после измен
 credentials.json   # ключ Google сервисного аккаунта
 .env               # локальные секреты
 output/            # сгенерированные Pinterest-пины
+logs/              # логи cron-демона
 ```
 
-Все три уже в `.gitignore`.
+Все четыре уже в `.gitignore`.
 
 ---
 
@@ -298,3 +306,4 @@ output/            # сгенерированные Pinterest-пины
   исправлено через извлечение `alt` атрибута regex'ом
 - **ComfyUI fallback** — если ComfyUI недоступен, изображения создаются без AI
 - **SSL warning при старте** — `SSLEOFError` от gspread нормален, авторетрай встроен
+- **Docker два режима** — `cf-parser` (разовый) и `cf-parser-cron` (автоматический)

@@ -1,10 +1,14 @@
 .env
 credentials.json
 output/
+logs/
 .git/
+.github/
 __pycache__/
 *.pyc
 *.pyo
-README.md
-CLAUDE.md
+*.md
 .dockerignore
+.gitignore
+test_components.py
+TEST_REPORT.md
