@@ -22,6 +22,7 @@ import sys
 from config import CATEGORIES
 from comfy_processor import process_products, create_pin
 from extractor import run_batch
+from font_generator import generate_font_asset, GEN_MODES
 from parser import parse_category
 from sheets import append_products, ensure_tabs, get_sheet_client, test_connection
 
@@ -146,6 +147,34 @@ def cmd_extract(input_path: str, output_root: str = "output"):
     )
 
 
+def cmd_generate_font(
+    input_path: str,
+    output_root: str,
+    font_name: str,
+    category: str,
+    mode: str,
+):
+    """Generate font wordmark asset with signature-lock/full-regen modes."""
+    logger.info("Mode: generate font")
+    logger.info("Input: %s", input_path)
+    logger.info("Output root: %s", output_root)
+    logger.info("Requested mode: %s", mode)
+
+    result = generate_font_asset(
+        source_preview_path=input_path,
+        output_root=output_root,
+        font_name=font_name,
+        category=category,
+        mode=mode,
+    )
+    logger.info(
+        "[OK] Generated: %s | effective_mode=%s | fallback=%s",
+        result.output_wordmark_path,
+        result.mode,
+        result.used_fallback,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="CF Pinterest Parser - quick launcher",
@@ -156,12 +185,14 @@ Commands:
   pins     Pins only
   test     Test: one category, one page
   extract  Remove background and save transparent overlays
+  generate-font  Generate font wordmark asset (signature-lock/full-regen scaffold)
 
 Examples:
   python run.py parse                          # all, 3 pages
   python run.py parse --niche fonts --pages 10 # fonts only, 10 pages
   python run.py test                            # test
   python run.py extract --input ./previews      # extraction only
+  python run.py generate-font --input ./preview.jpg --font-name \"Amore\" --category wedding
         """,
     )
 
@@ -195,6 +226,17 @@ Examples:
         default="output",
         help="Output root folder (default: output)",
     )
+    p_gen = subparsers.add_parser("generate-font", help="Generate font wordmark asset")
+    p_gen.add_argument("--input", "-i", required=True, help="Source preview image path")
+    p_gen.add_argument("--output", "-o", default="output", help="Output root folder (default: output)")
+    p_gen.add_argument("--font-name", required=True, help="Font display name for reports")
+    p_gen.add_argument("--category", default="fonts", help="Niche/category label (default: fonts)")
+    p_gen.add_argument(
+        "--mode",
+        default="signature_lock",
+        choices=sorted(GEN_MODES),
+        help="Generation mode (default: signature_lock)",
+    )
 
     args = parser.parse_args()
 
@@ -206,6 +248,14 @@ Examples:
         cmd_test()
     elif args.command == "extract":
         cmd_extract(input_path=args.input, output_root=args.output)
+    elif args.command == "generate-font":
+        cmd_generate_font(
+            input_path=args.input,
+            output_root=args.output,
+            font_name=args.font_name,
+            category=args.category,
+            mode=args.mode,
+        )
     else:
         parser.print_help()
         sys.exit(1)

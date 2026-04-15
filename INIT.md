@@ -21,6 +21,26 @@
   - выделяем главный текст/wordmark из исходника,
   - в ComfyUI генерируем только фон (negative prompt: `text/letters/words`),
   - поверх фона накладываем исходный signature-слой без деформации.
+- Стартован модуль генерации шрифта: `font_generator.py`.
+  - Добавлены режимы: `signature_lock`, `full_regen`, `hybrid`.
+  - На текущем этапе стабильно реализован `signature_lock`:
+    - используется extracted overlay как source-of-truth для формы букв,
+    - сохраняется `generated_wordmark.png`,
+    - применяются базовые readability-эффекты (soft shadow/glow) без деформации глифов.
+  - `full_regen` и `hybrid` пока работают через fallback на `signature_lock` с явной записью в отчёт.
+- В CLI добавлена команда генерации:
+  - `python run.py generate-font --input <preview> --font-name "<name>" --category <niche> --mode <signature_lock|full_regen|hybrid> --output <dir>`
+- Для генерации добавлен отчёт:
+  - `output/<font_id>/font_generation_report.json` (requested/effective mode, fallback, пути артефактов).
+- Smoke-test команды `generate-font` на `super-3.jpg` выполнен успешно.
+
+### Контекст после лимитов (быстрый рестарт)
+1. Ветка эксперимента: `codex/signature-lock-comfy-experiment`.
+2. Проверочный запуск:
+   - `python run.py generate-font --input ./test/extractor/input/super-3.jpg --font-name "Super Font" --category fonts --mode signature_lock --output ./test/extractor/output`
+3. Следующий шаг реализации:
+   - подключить реальный `full_regen` через ComfyUI workflow без fallback,
+   - в `hybrid` включить цепочку `full_regen -> signature_lock` при fail similarity/QC.
 - Внедрён универсальный `QC rule-engine` для масштабной пакетной обработки:
   - новые QC-метрики в отчёте: `noise_score`, `stroke_loss_score`, `edge_artifact_score`, `component_count`,
   - решение по каждому файлу: `qc_decision` (`PASS` / `RETRY` / `MANUAL_CHECK`),
