@@ -14,6 +14,8 @@ from rembg import remove
 logger = logging.getLogger(__name__)
 
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+STANDARD_OVERLAY_SIZE = 1500
+STANDARD_CONTENT_MAX_PX = 1200
 
 
 @dataclass
@@ -29,6 +31,10 @@ class ExtractionResult:
     needs_manual_check: bool
     manual_reason: str
     simple_background: bool
+    overlay_size: tuple[int, int]
+    bbox_px: dict
+    bbox_norm: dict
+    font_colors: dict
 
 
 def _estimate_simple_background(img_rgb: np.ndarray) -> bool:
@@ -201,6 +207,104 @@ def _soft_alpha_from_binary_mask(mask: np.ndarray) -> np.ndarray:
     alpha[binary > 0] = np.maximum(alpha[binary > 0], 245)
     alpha[alpha < 10] = 0
     return alpha
+
+
+def _fit_rgba_to_standard_canvas(rgba: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict, dict]:
+    """
+    Place extracted glyphs on a transparent 1500x1500 canvas.
+    Returns (canvas_rgba, canvas_mask, bbox_px, bbox_norm).
+    """
+    alpha = rgba[:, :, 3]
+    ys, xs = np.where(alpha > 0)
+    size = STANDARD_OVERLAY_SIZE
+
+    canvas_rgba = np.zeros((size, size, 4), dtype=np.uint8)
+    canvas_mask = np.zeros((size, size), dtype=np.uint8)
+    empty_bbox = {"x": 0, "y": 0, "w": 0, "h": 0}
+    empty_bbox_norm = {"x": 0.0, "y": 0.0, "w": 0.0, "h": 0.0}
+
+    if ys.size == 0:
+        return canvas_rgba, canvas_mask, empty_bbox, empty_bbox_norm
+
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    crop = rgba[y0:y1, x0:x1, :]
+
+    ch, cw = crop.shape[:2]
+    if ch <= 0 or cw <= 0:
+        return canvas_rgba, canvas_mask, empty_bbox, empty_bbox_norm
+
+    scale = min(STANDARD_CONTENT_MAX_PX / cw, STANDARD_CONTENT_MAX_PX / ch)
+    new_w = max(1, int(round(cw * scale)))
+    new_h = max(1, int(round(ch * scale)))
+    resized = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+
+    px = (size - new_w) // 2
+    py = (size - new_h) // 2
+    canvas_rgba[py : py + new_h, px : px + new_w, :] = resized
+
+    alpha_canvas = canvas_rgba[:, :, 3]
+    canvas_mask[alpha_canvas > 0] = 255
+
+    bbox_px = {"x": int(px), "y": int(py), "w": int(new_w), "h": int(new_h)}
+    bbox_norm = {
+        "x": round(px / size, 6),
+        "y": round(py / size, 6),
+        "w": round(new_w / size, 6),
+        "h": round(new_h / size, 6),
+    }
+    return canvas_rgba, canvas_mask, bbox_px, bbox_norm
+
+
+def _rgb_to_hex(rgb: np.ndarray) -> str:
+    return "#{:02x}{:02x}{:02x}".format(int(rgb[0]), int(rgb[1]), int(rgb[2]))
+
+
+def _extract_font_color_info(canvas_rgba: np.ndarray) -> dict:
+    alpha = canvas_rgba[:, :, 3]
+    rgb = canvas_rgba[:, :, :3]
+    pixels = rgb[alpha > 30]
+    if pixels.size == 0:
+        return {
+            "dominant_colors": [],
+            "is_multicolor": False,
+            "lightness_score": 0.0,
+            "mean_color": "#000000",
+            "median_color": "#000000",
+            "contrast_hint": "use_mid_bg",
+        }
+
+    # Quantize and pick top palette buckets.
+    q = ((pixels // 16) * 16).astype(np.uint8)
+    uniq, counts = np.unique(q, axis=0, return_counts=True)
+    order = np.argsort(counts)[::-1]
+
+    dominant = []
+    for idx in order[:5]:
+        dominant.append(_rgb_to_hex(uniq[idx]))
+
+    mean_rgb = pixels.mean(axis=0)
+    median_rgb = np.median(pixels, axis=0)
+    lightness = float((0.2126 * mean_rgb[0] + 0.7152 * mean_rgb[1] + 0.0722 * mean_rgb[2]) / 255.0)
+
+    rgb_std = float(np.mean(np.std(pixels.astype(np.float32), axis=0)))
+    is_multicolor = len(dominant) >= 2 and rgb_std > 18.0
+
+    if lightness >= 0.62:
+        contrast_hint = "use_dark_bg"
+    elif lightness <= 0.38:
+        contrast_hint = "use_light_bg"
+    else:
+        contrast_hint = "use_mid_bg"
+
+    return {
+        "dominant_colors": dominant,
+        "is_multicolor": is_multicolor,
+        "lightness_score": round(lightness, 4),
+        "mean_color": _rgb_to_hex(mean_rgb),
+        "median_color": _rgb_to_hex(median_rgb),
+        "contrast_hint": contrast_hint,
+    }
 
 
 def _letter_mask_from_rect_component(img_rgb: np.ndarray, rough_mask: np.ndarray) -> np.ndarray | None:
@@ -396,10 +500,13 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
 
     alpha_soft = _soft_alpha_from_binary_mask(mask)
     rgba_np[:, :, 3] = alpha_soft
-    overlay = Image.fromarray(rgba_np, mode="RGBA")
-    mask_image = Image.fromarray(mask, mode="L")
 
-    quality, fg_ratio, tr_ratio = _compute_quality(mask)
+    canvas_rgba, canvas_mask, bbox_px, bbox_norm = _fit_rgba_to_standard_canvas(rgba_np)
+    overlay = Image.fromarray(canvas_rgba, mode="RGBA")
+    mask_image = Image.fromarray(canvas_mask, mode="L")
+    font_colors = _extract_font_color_info(canvas_rgba)
+
+    quality, fg_ratio, tr_ratio = _compute_quality(canvas_mask)
 
     manual_reason = ""
     needs_manual_check = False
@@ -425,6 +532,11 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         "source_path": str(src),
         "overlay_path": str(overlay_path),
         "mask_path": str(mask_path),
+        "overlay_size": [STANDARD_OVERLAY_SIZE, STANDARD_OVERLAY_SIZE],
+        "bbox_px": bbox_px,
+        "bbox_norm": bbox_norm,
+        "recommended_scale_pct": round(bbox_norm["w"] * 100.0, 2),
+        "font_colors": font_colors,
         "quality_score": round(quality, 4),
         "foreground_ratio": round(fg_ratio, 4),
         "transparency_ratio": round(tr_ratio, 4),
@@ -472,6 +584,10 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         needs_manual_check=needs_manual_check,
         manual_reason=manual_reason,
         simple_background=simple_bg,
+        overlay_size=(STANDARD_OVERLAY_SIZE, STANDARD_OVERLAY_SIZE),
+        bbox_px=bbox_px,
+        bbox_norm=bbox_norm,
+        font_colors=font_colors,
     )
 
 
