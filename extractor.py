@@ -2,6 +2,7 @@ import argparse
 import io
 import json
 import logging
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,8 +86,111 @@ def _foreground_ratio(mask: np.ndarray) -> float:
 
 
 def _looks_like_full_rectangle(mask: np.ndarray) -> bool:
-    """Detect failure mode when background was not removed and full card remains foreground."""
-    return _foreground_ratio(mask) >= 0.82
+    """
+    Detect failure mode when mask is basically a filled rectangular card.
+    Global foreground ratio can be moderate (center card only), so we also
+    check dense fill inside the largest component bounding box.
+    """
+    fg = _foreground_ratio(mask)
+    if fg >= 0.82:
+        return True
+
+    bbox, fill, area = _largest_component_bbox_and_fill(mask)
+    if bbox is None:
+        return False
+
+    area_ratio = float(area / mask.size)
+    return area_ratio >= 0.04 and fill >= 0.86
+
+
+def _largest_component_bbox_and_fill(mask: np.ndarray) -> tuple[tuple[int, int, int, int] | None, float, int]:
+    """
+    Return bbox (x0,y0,x1,y1), fill ratio inside bbox, and component area
+    for the largest connected component.
+    """
+    binary = (mask > 0).astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if n <= 1:
+        return None, 0.0, 0
+
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    idx = int(np.argmax(areas)) + 1
+    x = int(stats[idx, cv2.CC_STAT_LEFT])
+    y = int(stats[idx, cv2.CC_STAT_TOP])
+    w = int(stats[idx, cv2.CC_STAT_WIDTH])
+    h = int(stats[idx, cv2.CC_STAT_HEIGHT])
+    area = int(stats[idx, cv2.CC_STAT_AREA])
+    if w <= 0 or h <= 0:
+        return None, 0.0, area
+    fill = float(area / float(w * h))
+    return (x, y, x + w, y + h), fill, area
+
+
+def _extract_text_mask_from_plate_roi(roi_rgb: np.ndarray) -> np.ndarray:
+    """
+    Extract text-like foreground from a plate/card ROI.
+    Keeps colorful letters and dark contours, rejects pale background.
+    """
+    hsv = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2HSV)
+    h, s, v = cv2.split(hsv)
+
+    # Colorful glyphs (pink/yellow/green/blue etc.)
+    colorful = ((s > 45) & (v > 35)).astype(np.uint8) * 255
+    # Dark glyphs/contours (black script/outline)
+    dark = (v < 95).astype(np.uint8) * 255
+
+    # Combine and suppress obvious background-like pixels.
+    mask = cv2.bitwise_or(colorful, dark)
+    pale_bg = ((s < 25) & (v > 170)).astype(np.uint8) * 255
+    mask = cv2.bitwise_and(mask, cv2.bitwise_not(pale_bg))
+
+    kernel = np.ones((2, 2), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    # Remove tiny noise components.
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    clean = np.zeros_like(mask)
+    min_area = max(24, int(0.00008 * roi_rgb.shape[0] * roi_rgb.shape[1]))
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area >= min_area:
+            clean[labels == i] = 255
+
+    # Slightly thicken thin glyph strokes.
+    clean = cv2.dilate(clean, np.ones((2, 2), np.uint8), iterations=1)
+    return clean
+
+
+def _letter_mask_from_rect_component(img_rgb: np.ndarray, rough_mask: np.ndarray) -> np.ndarray | None:
+    """
+    If rough mask looks like a rectangular card, extract text-only mask from inside it.
+    """
+    bbox, fill, area = _largest_component_bbox_and_fill(rough_mask)
+    if bbox is None:
+        return None
+
+    x0, y0, x1, y1 = bbox
+    bw, bh = x1 - x0, y1 - y0
+    aspect = float(bw / bh) if bh else 0.0
+    area_ratio = float(area / rough_mask.size)
+
+    # Typical "card kept as foreground" pattern.
+    if fill < 0.68:
+        return None
+    if not (1.0 <= aspect <= 2.8):
+        return None
+    if area_ratio < 0.04:
+        return None
+
+    roi = img_rgb[y0:y1, x0:x1, :]
+    roi_mask = _extract_text_mask_from_plate_roi(roi)
+    if _foreground_ratio(roi_mask) < 0.004:
+        return None
+
+    full = np.zeros(rough_mask.shape, dtype=np.uint8)
+    full[y0:y1, x0:x1] = roi_mask
+    return full
 
 
 def _remove_border_touching_components(mask: np.ndarray) -> np.ndarray:
@@ -180,12 +284,17 @@ def _strict_letter_mask(img_rgb: np.ndarray, simple_bg: bool) -> np.ndarray:
     if not candidates:
         return np.zeros(img_rgb.shape[:2], dtype=np.uint8)
 
-    # Keep the leaner mask if it remains plausible for text.
-    plausible = [c for c in candidates if 0.005 <= c[1] <= 0.45]
-    if plausible:
-        chosen = min(plausible, key=lambda x: x[1])[0]
+    # Prefer explicit card ROI text extraction if a rectangular component is detected.
+    card_text = _letter_mask_from_rect_component(img_rgb, by_otsu)
+    if card_text is not None and _foreground_ratio(card_text) > 0.003:
+        chosen = card_text
     else:
-        chosen = min(candidates, key=lambda x: x[1])[0]
+        # Keep the leaner mask if it remains plausible for text.
+        plausible = [c for c in candidates if 0.005 <= c[1] <= 0.45]
+        if plausible:
+            chosen = min(plausible, key=lambda x: x[1])[0]
+        else:
+            chosen = min(candidates, key=lambda x: x[1])[0]
 
     # Edge smoothing without expanding to background.
     blurred = cv2.GaussianBlur(chosen, (3, 3), 0)
@@ -235,7 +344,11 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         mask = _postprocess_alpha(alpha, simple_bg=simple_bg)
         if _looks_like_full_rectangle(mask):
             logger.info("[%s] rembg kept full rectangle, switching to strict letter mask", font_id)
-            mask = _strict_letter_mask(rgb, simple_bg=simple_bg)
+            roi_mask = _letter_mask_from_rect_component(rgb, mask)
+            if roi_mask is not None and _foreground_ratio(roi_mask) > 0.003:
+                mask = roi_mask
+            else:
+                mask = _strict_letter_mask(rgb, simple_bg=simple_bg)
     except Exception as exc:
         logger.warning("[%s] rembg unavailable/failed (%s). Using strict CV mask only.", font_id, exc)
         mask = _strict_letter_mask(rgb, simple_bg=simple_bg)
@@ -258,32 +371,44 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         needs_manual_check = True
         manual_reason = "too_much_foreground"
 
-    save_dir = out_dir
-    if needs_manual_check:
-        save_dir = out_dir / "manual_check"
-        save_dir.mkdir(parents=True, exist_ok=True)
-
-    overlay_path = save_dir / "extracted_overlay.png"
-    mask_path = save_dir / "mask.png"
-    report_path = save_dir / "extraction_report.json"
+    # Always write latest artifacts to the root font folder.
+    overlay_path = out_dir / "extracted_overlay.png"
+    mask_path = out_dir / "mask.png"
+    report_path = out_dir / "extraction_report.json"
 
     overlay.save(overlay_path, "PNG")
     mask_image.save(mask_path, "PNG")
+    report_payload = {
+        "font_id": font_id,
+        "source_path": str(src),
+        "overlay_path": str(overlay_path),
+        "mask_path": str(mask_path),
+        "quality_score": round(quality, 4),
+        "foreground_ratio": round(fg_ratio, 4),
+        "transparency_ratio": round(tr_ratio, 4),
+        "simple_background": simple_bg,
+        "needs_manual_check": needs_manual_check,
+        "manual_reason": manual_reason,
+    }
     _save_report(
         report_path,
-        {
-            "font_id": font_id,
-            "source_path": str(src),
-            "overlay_path": str(overlay_path),
-            "mask_path": str(mask_path),
-            "quality_score": round(quality, 4),
-            "foreground_ratio": round(fg_ratio, 4),
-            "transparency_ratio": round(tr_ratio, 4),
-            "simple_background": simple_bg,
-            "needs_manual_check": needs_manual_check,
-            "manual_reason": manual_reason,
-        },
+        report_payload,
     )
+
+    # If marked as manual-check, also keep a copy in manual_check for inspection queue.
+    if needs_manual_check:
+        manual_dir = out_dir / "manual_check"
+        manual_dir.mkdir(parents=True, exist_ok=True)
+        manual_overlay = manual_dir / "extracted_overlay.png"
+        manual_mask = manual_dir / "mask.png"
+        manual_report = manual_dir / "extraction_report.json"
+        shutil.copy2(overlay_path, manual_overlay)
+        shutil.copy2(mask_path, manual_mask)
+
+        manual_payload = dict(report_payload)
+        manual_payload["overlay_path"] = str(manual_overlay)
+        manual_payload["mask_path"] = str(manual_mask)
+        _save_report(manual_report, manual_payload)
 
     logger.info(
         "[%s] quality=%.3f foreground=%.3f manual_check=%s",
