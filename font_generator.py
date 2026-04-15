@@ -36,6 +36,11 @@ class FontGenerationResult:
 
 COMFY_URL = os.environ.get("COMFY_URL", "http://127.0.0.1:8188")
 COMFY_WORKFLOW_PATH = os.environ.get("COMFY_WORKFLOW_PATH", "/Users/nick/Downloads/DreamShaperXL.json")
+COMFY_TIMEOUT_SEC = int(os.environ.get("COMFY_TIMEOUT_SEC", "180"))
+REGEN_MIN_SIMILARITY = float(os.environ.get("REGEN_MIN_SIMILARITY", "0.62"))
+REGEN_MIN_ASPECT_RATIO_MATCH = float(os.environ.get("REGEN_MIN_ASPECT_RATIO_MATCH", "0.55"))
+REGEN_MIN_FOREGROUND_RATIO_MATCH = float(os.environ.get("REGEN_MIN_FOREGROUND_RATIO_MATCH", "0.35"))
+REGEN_MIN_COMPONENT_RATIO_MATCH = float(os.environ.get("REGEN_MIN_COMPONENT_RATIO_MATCH", "0.20"))
 
 
 def _apply_readability_effects(wordmark_path: Path) -> None:
@@ -78,13 +83,15 @@ def _load_workflow_graph(path: str | Path) -> dict:
 
 def _build_positive_prompt(font_name: str, category: str) -> str:
     return (
-        f"typography poster, wordmark text '{font_name}', {category} style, "
-        "clean centered composition, high legibility, thick clear letters, no background clutter"
+        f"typography wordmark for '{font_name}', {category} style, full readable word, "
+        "flat 2d lettering, high-contrast dark text on light plain background, centered composition, "
+        "clean edges, no decorative objects"
     )
 
 
 def _build_negative_prompt() -> str:
     return (
+        "single letter, monogram, white text on white background, low contrast, embossed text, 3d text, "
         "watermark, logo, signature, frame, border, low quality, blurry, distorted, illegible text"
     )
 
@@ -211,6 +218,53 @@ def _hamming_similarity(a: int, b: int, bits: int = 256) -> float:
     return max(0.0, 1.0 - (dist / bits))
 
 
+def _safe_aspect_from_bbox(bbox_norm: dict) -> float:
+    w = float(bbox_norm.get("w", 0.0))
+    h = float(bbox_norm.get("h", 0.0))
+    if w <= 0.0 or h <= 0.0:
+        return 0.0
+    return w / h
+
+
+def _ratio_match(a: float, b: float) -> float:
+    if a <= 0.0 or b <= 0.0:
+        return 0.0
+    lo = min(a, b)
+    hi = max(a, b)
+    return lo / hi
+
+
+def _validate_regen_similarity(
+    source_extraction,
+    regen_extraction,
+    source_overlay: Path,
+    regen_overlay: Path,
+) -> tuple[bool, float, str]:
+    src_hash = _ahash_rgba_alpha(source_overlay)
+    regen_hash = _ahash_rgba_alpha(regen_overlay)
+    similarity = _hamming_similarity(src_hash, regen_hash)
+    if similarity < REGEN_MIN_SIMILARITY:
+        return False, similarity, f"regen_similarity_low:{similarity:.3f}"
+
+    src_aspect = _safe_aspect_from_bbox(source_extraction.bbox_norm)
+    regen_aspect = _safe_aspect_from_bbox(regen_extraction.bbox_norm)
+    aspect_match = _ratio_match(src_aspect, regen_aspect)
+    if aspect_match < REGEN_MIN_ASPECT_RATIO_MATCH:
+        return False, similarity, f"regen_aspect_mismatch:{aspect_match:.3f}"
+
+    fg_match = _ratio_match(float(source_extraction.foreground_ratio), float(regen_extraction.foreground_ratio))
+    if fg_match < REGEN_MIN_FOREGROUND_RATIO_MATCH:
+        return False, similarity, f"regen_foreground_mismatch:{fg_match:.3f}"
+
+    src_comp = float(source_extraction.qc_metrics.get("component_count", 1) or 1)
+    regen_comp = float(regen_extraction.qc_metrics.get("component_count", 1) or 1)
+    comp_match = _ratio_match(src_comp, regen_comp)
+    if comp_match < REGEN_MIN_COMPONENT_RATIO_MATCH:
+        return False, similarity, f"regen_component_mismatch:{comp_match:.3f}"
+
+    return True, similarity, ""
+
+
 def generate_font_asset(
     source_preview_path: str | Path,
     output_root: str | Path,
@@ -234,8 +288,8 @@ def generate_font_asset(
     out_dir = Path(output_root) / font_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    extraction = extract_overlay(src, output_root=output_root)
-    source_overlay = Path(extraction.overlay_path)
+    source_extraction = extract_overlay(src, output_root=output_root)
+    source_overlay = Path(source_extraction.overlay_path)
     generated_wordmark = out_dir / "generated_wordmark.png"
 
     used_fallback = False
@@ -262,7 +316,7 @@ def generate_font_asset(
                     negative_prompt=_build_negative_prompt(),
                 )
                 prompt_id = _queue_prompt(prompt_graph)
-                outputs = _wait_for_output(prompt_id, timeout_sec=180)
+                outputs = _wait_for_output(prompt_id, timeout_sec=COMFY_TIMEOUT_SEC)
                 if not outputs:
                     regen_reason = "comfy_timeout"
                 else:
@@ -272,8 +326,16 @@ def generate_font_asset(
                     else:
                         regen_extraction = extract_overlay(raw_img_path, output_root=output_root)
                         regen_overlay_path = Path(regen_extraction.overlay_path)
+                        regen_ok, similarity_score, regen_reason = _validate_regen_similarity(
+                            source_extraction=source_extraction,
+                            regen_extraction=regen_extraction,
+                            source_overlay=source_overlay,
+                            regen_overlay=regen_overlay_path,
+                        )
                         if regen_extraction.needs_manual_check:
-                            regen_reason = "regen_overlay_low_quality"
+                            regen_reason = f"regen_overlay_low_quality:{regen_extraction.manual_reason or 'manual_check'}"
+                        elif not regen_ok:
+                            pass
                         else:
                             full_regen_ok = True
             except Exception as exc:
@@ -291,18 +353,8 @@ def generate_font_asset(
 
         elif mode == "hybrid":
             if full_regen_ok and regen_overlay_path is not None:
-                # Similarity gate for hybrid: if too far, fallback to signature_lock.
-                src_hash = _ahash_rgba_alpha(source_overlay)
-                regen_hash = _ahash_rgba_alpha(regen_overlay_path)
-                similarity_score = _hamming_similarity(src_hash, regen_hash)
-                if similarity_score >= 0.40:
-                    shutil.copy2(regen_overlay_path, generated_wordmark)
-                    effective_mode = "full_regen"
-                else:
-                    shutil.copy2(source_overlay, generated_wordmark)
-                    effective_mode = "signature_lock"
-                    used_fallback = True
-                    fallback_reason = f"hybrid_similarity_low:{similarity_score:.3f}"
+                shutil.copy2(regen_overlay_path, generated_wordmark)
+                effective_mode = "full_regen"
             else:
                 shutil.copy2(source_overlay, generated_wordmark)
                 effective_mode = "signature_lock"
@@ -323,6 +375,11 @@ def generate_font_asset(
         "source_overlay_path": str(source_overlay),
         "comfy_url": COMFY_URL,
         "comfy_workflow_path": COMFY_WORKFLOW_PATH,
+        "comfy_timeout_sec": COMFY_TIMEOUT_SEC,
+        "regen_min_similarity": REGEN_MIN_SIMILARITY,
+        "regen_min_aspect_ratio_match": REGEN_MIN_ASPECT_RATIO_MATCH,
+        "regen_min_foreground_ratio_match": REGEN_MIN_FOREGROUND_RATIO_MATCH,
+        "regen_min_component_ratio_match": REGEN_MIN_COMPONENT_RATIO_MATCH,
         "similarity_score": round(similarity_score, 4),
         "generated_wordmark_path": str(generated_wordmark),
     }

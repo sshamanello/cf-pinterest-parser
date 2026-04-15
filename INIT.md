@@ -12,6 +12,20 @@
 
 ## Изменения 2026-04-15
 
+- Ужесточён `full_regen/hybrid` в `font_generator.py` для борьбы с плохими генерациями (кейс: белая `H` на белом фоне):
+  - добавлены структурные quality-gates между исходным и regen-оверлеем:
+    - минимум похожести `aHash` (`REGEN_MIN_SIMILARITY`, default `0.62`),
+    - проверка совпадения пропорций bbox (`REGEN_MIN_ASPECT_RATIO_MATCH`, default `0.55`),
+    - проверка совпадения доли foreground (`REGEN_MIN_FOREGROUND_RATIO_MATCH`, default `0.35`),
+    - проверка сопоставимости числа компонент (`REGEN_MIN_COMPONENT_RATIO_MATCH`, default `0.20`).
+  - если любой gate не проходит, режим автоматически уходит в `signature_lock` fallback с явной причиной в `font_generation_report.json`.
+- Усилены промпты для Comfy в `full_regen`:
+  - positive: акцент на `full readable word`, `flat 2d lettering`, `high-contrast dark text`.
+  - negative: добавлены `single letter`, `white text on white background`, `embossed text`, `3d text`.
+- Таймаут ожидания Comfy вынесен в переменную окружения:
+  - `COMFY_TIMEOUT_SEC` (default `180`).
+- В `font_generation_report.json` теперь пишутся используемые пороги (`regen_*`) и `comfy_timeout_sec` для прозрачной диагностики.
+
 - Создана отдельная экспериментальная ветка: `codex/signature-lock-comfy-experiment` для безопасной проверки нового подхода с возможностью отката.
 - Проверен текущий ComfyUI workflow `DreamShaperXL.json`:
   - это `txt2img` граф (`EmptyLatentImage -> KSampler -> VAEDecode -> SaveImage`),
