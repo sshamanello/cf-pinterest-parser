@@ -1,9 +1,15 @@
 import json
 import logging
+import os
 import shutil
+import time
+import uuid
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+import requests
 from PIL import Image, ImageFilter
 
 from extractor import extract_overlay
@@ -25,6 +31,11 @@ class FontGenerationResult:
     font_name: str
     used_fallback: bool
     fallback_reason: str
+    similarity_score: float
+
+
+COMFY_URL = os.environ.get("COMFY_URL", "http://127.0.0.1:8188")
+COMFY_WORKFLOW_PATH = os.environ.get("COMFY_WORKFLOW_PATH", "/Users/nick/Downloads/DreamShaperXL.json")
 
 
 def _apply_readability_effects(wordmark_path: Path) -> None:
@@ -48,6 +59,156 @@ def _apply_readability_effects(wordmark_path: Path) -> None:
     canvas.alpha_composite(glow_rgba)
     canvas.alpha_composite(img)
     canvas.save(wordmark_path, "PNG")
+
+
+def _comfy_available() -> bool:
+    try:
+        r = requests.get(f"{COMFY_URL}/system_stats", timeout=3)
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
+def _load_workflow_graph(path: str | Path) -> dict:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Comfy workflow not found: {p}")
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def _build_positive_prompt(font_name: str, category: str) -> str:
+    return (
+        f"typography poster, wordmark text '{font_name}', {category} style, "
+        "clean centered composition, high legibility, thick clear letters, no background clutter"
+    )
+
+
+def _build_negative_prompt() -> str:
+    return (
+        "watermark, logo, signature, frame, border, low quality, blurry, distorted, illegible text"
+    )
+
+
+def _parse_workflow_template(graph: dict, positive_prompt: str, negative_prompt: str) -> dict:
+    """
+    Parse LiteGraph JSON exported by ComfyUI and produce API /prompt payload.
+    This parser is scoped to the DreamShaperXL workflow structure currently used.
+    """
+    nodes = graph.get("nodes", [])
+    by_type: dict[str, list[dict]] = {}
+    for n in nodes:
+        by_type.setdefault(n.get("type", ""), []).append(n)
+
+    ckpt = by_type.get("CheckpointLoaderSimple", [{}])[0].get("widgets_values", ["DreamShaperXL_Lightning.safetensors"])[0]
+    vae_name = by_type.get("VAELoader", [{}])[0].get("widgets_values", ["sdxl_vae.safetensors"])[0]
+
+    # Keep sampler settings from current workflow by default.
+    ks_widgets = by_type.get("KSampler", [{}])[0].get("widgets_values", [int(uuid.uuid4().int % (2**31)), "randomize", 8, 1.5, "dpmpp_sde", "sgm_uniform", 1])
+    seed = int(uuid.uuid4().int % (2**31))
+    steps = int(ks_widgets[2])
+    cfg = float(ks_widgets[3])
+    sampler_name = str(ks_widgets[4])
+    scheduler = str(ks_widgets[5])
+    denoise = float(ks_widgets[6])
+
+    latent_widgets = by_type.get("EmptyLatentImage", [{}])[0].get("widgets_values", [832, 1248, 1])
+    width = int(latent_widgets[0])
+    height = int(latent_widgets[1])
+    batch_size = int(latent_widgets[2]) if len(latent_widgets) >= 3 else 1
+
+    save_prefix = by_type.get("SaveImage", [{}])[0].get("widgets_values", ["ComfyUI"])[0]
+    save_prefix = f"{save_prefix}_font_regen"
+
+    # Build Comfy API graph.
+    prompt = {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt}},
+        "8": {"class_type": "VAELoader", "inputs": {"vae_name": vae_name}},
+        "2": {"class_type": "CLIPTextEncode", "inputs": {"text": positive_prompt, "clip": ["1", 1]}},
+        "3": {"class_type": "CLIPTextEncode", "inputs": {"text": negative_prompt, "clip": ["1", 1]}},
+        "4": {"class_type": "EmptyLatentImage", "inputs": {"width": width, "height": height, "batch_size": batch_size}},
+        "5": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": ["2", 0],
+                "negative": ["3", 0],
+                "latent_image": ["4", 0],
+                "seed": seed,
+                "steps": steps,
+                "cfg": cfg,
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
+                "denoise": denoise,
+            },
+        },
+        "6": {"class_type": "VAEDecode", "inputs": {"samples": ["5", 0], "vae": ["8", 0]}},
+        "7": {"class_type": "SaveImage", "inputs": {"images": ["6", 0], "filename_prefix": save_prefix}},
+    }
+    return prompt
+
+
+def _queue_prompt(prompt_graph: dict) -> str:
+    payload = json.dumps({"prompt": prompt_graph}).encode()
+    req = urllib.request.Request(
+        f"{COMFY_URL}/prompt",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        return json.loads(resp.read())["prompt_id"]
+
+
+def _wait_for_output(prompt_id: str, timeout_sec: int = 180) -> dict | None:
+    deadline = time.time() + timeout_sec
+    while time.time() < deadline:
+        try:
+            r = requests.get(f"{COMFY_URL}/history/{prompt_id}", timeout=10)
+            data = r.json()
+            if prompt_id in data:
+                return data[prompt_id].get("outputs", {})
+        except Exception:
+            pass
+        time.sleep(2)
+    return None
+
+
+def _download_first_output_image(outputs: dict, save_path: Path) -> bool:
+    for node_output in outputs.values():
+        images = node_output.get("images", [])
+        for img in images:
+            params = urllib.parse.urlencode(
+                {
+                    "filename": img["filename"],
+                    "subfolder": img.get("subfolder", ""),
+                    "type": img.get("type", "output"),
+                }
+            )
+            url = f"{COMFY_URL}/view?{params}"
+            try:
+                r = requests.get(url, timeout=30)
+                r.raise_for_status()
+                save_path.write_bytes(r.content)
+                return True
+            except Exception:
+                continue
+    return False
+
+
+def _ahash_rgba_alpha(path: Path, size: int = 16) -> int:
+    img = Image.open(path).convert("RGBA")
+    alpha = img.split()[3].resize((size, size), Image.LANCZOS)
+    px = list(alpha.getdata())
+    avg = sum(px) / len(px)
+    bits = 0
+    for i, p in enumerate(px):
+        if p >= avg:
+            bits |= (1 << i)
+    return bits
+
+
+def _hamming_similarity(a: int, b: int, bits: int = 256) -> float:
+    dist = (a ^ b).bit_count()
+    return max(0.0, 1.0 - (dist / bits))
 
 
 def generate_font_asset(
@@ -80,15 +241,73 @@ def generate_font_asset(
     used_fallback = False
     fallback_reason = ""
     effective_mode = mode
+    similarity_score = 0.0
 
-    # Current stable implementation uses signature-lock layer.
+    # Stable signature-lock path.
     if mode == "signature_lock":
         shutil.copy2(source_overlay, generated_wordmark)
     else:
-        shutil.copy2(source_overlay, generated_wordmark)
-        used_fallback = True
-        fallback_reason = "mode_not_implemented_yet_using_signature_lock"
-        effective_mode = "signature_lock"
+        full_regen_ok = False
+        regen_overlay_path = None
+        regen_reason = ""
+
+        if not _comfy_available():
+            regen_reason = "comfy_unavailable"
+        else:
+            try:
+                graph = _load_workflow_graph(COMFY_WORKFLOW_PATH)
+                prompt_graph = _parse_workflow_template(
+                    graph,
+                    positive_prompt=_build_positive_prompt(font_name=font_name, category=category),
+                    negative_prompt=_build_negative_prompt(),
+                )
+                prompt_id = _queue_prompt(prompt_graph)
+                outputs = _wait_for_output(prompt_id, timeout_sec=180)
+                if not outputs:
+                    regen_reason = "comfy_timeout"
+                else:
+                    raw_img_path = out_dir / "full_regen_raw.png"
+                    if not _download_first_output_image(outputs, raw_img_path):
+                        regen_reason = "comfy_download_failed"
+                    else:
+                        regen_extraction = extract_overlay(raw_img_path, output_root=output_root)
+                        regen_overlay_path = Path(regen_extraction.overlay_path)
+                        if regen_extraction.needs_manual_check:
+                            regen_reason = "regen_overlay_low_quality"
+                        else:
+                            full_regen_ok = True
+            except Exception as exc:
+                regen_reason = f"full_regen_exception:{exc}"
+
+        if mode == "full_regen":
+            if full_regen_ok and regen_overlay_path is not None:
+                shutil.copy2(regen_overlay_path, generated_wordmark)
+                effective_mode = "full_regen"
+            else:
+                shutil.copy2(source_overlay, generated_wordmark)
+                effective_mode = "signature_lock"
+                used_fallback = True
+                fallback_reason = regen_reason or "full_regen_failed"
+
+        elif mode == "hybrid":
+            if full_regen_ok and regen_overlay_path is not None:
+                # Similarity gate for hybrid: if too far, fallback to signature_lock.
+                src_hash = _ahash_rgba_alpha(source_overlay)
+                regen_hash = _ahash_rgba_alpha(regen_overlay_path)
+                similarity_score = _hamming_similarity(src_hash, regen_hash)
+                if similarity_score >= 0.40:
+                    shutil.copy2(regen_overlay_path, generated_wordmark)
+                    effective_mode = "full_regen"
+                else:
+                    shutil.copy2(source_overlay, generated_wordmark)
+                    effective_mode = "signature_lock"
+                    used_fallback = True
+                    fallback_reason = f"hybrid_similarity_low:{similarity_score:.3f}"
+            else:
+                shutil.copy2(source_overlay, generated_wordmark)
+                effective_mode = "signature_lock"
+                used_fallback = True
+                fallback_reason = regen_reason or "hybrid_full_regen_failed"
 
     _apply_readability_effects(generated_wordmark)
 
@@ -102,6 +321,9 @@ def generate_font_asset(
         "fallback_reason": fallback_reason,
         "source_preview_path": str(src),
         "source_overlay_path": str(source_overlay),
+        "comfy_url": COMFY_URL,
+        "comfy_workflow_path": COMFY_WORKFLOW_PATH,
+        "similarity_score": round(similarity_score, 4),
         "generated_wordmark_path": str(generated_wordmark),
     }
     report_path = out_dir / "font_generation_report.json"
@@ -126,6 +348,7 @@ def generate_font_asset(
         font_name=font_name,
         used_fallback=used_fallback,
         fallback_reason=fallback_reason,
+        similarity_score=similarity_score,
     )
 
 

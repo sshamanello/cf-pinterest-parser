@@ -33,6 +33,21 @@
 - Для генерации добавлен отчёт:
   - `output/<font_id>/font_generation_report.json` (requested/effective mode, fallback, пути артефактов).
 - Smoke-test команды `generate-font` на `super-3.jpg` выполнен успешно.
+- Реализован реальный `full_regen` через ComfyUI API в `font_generator.py`:
+  - загружается workflow из `COMFY_WORKFLOW_PATH` (по умолчанию `/Users/nick/Downloads/DreamShaperXL.json`),
+  - positive/negative prompts подставляются программно,
+  - генерация отправляется в `COMFY_URL/prompt`, результат забирается из `/history` + `/view`.
+- Логика режимов после обновления:
+  - `signature_lock`: стабильный режим (без Comfy),
+  - `full_regen`: пытается реальную генерацию, при сбое уходит в `signature_lock` fallback,
+  - `hybrid`: пытается `full_regen`, при fail/similarity-gate fallback в `signature_lock`.
+- В `font_generation_report.json` теперь пишется:
+  - `comfy_url`, `comfy_workflow_path`, `similarity_score`,
+  - корректные `requested_mode` / `effective_mode` / `fallback_reason`.
+- Актуальный smoke-run:
+  - `requested_mode=full_regen`,
+  - `effective_mode=signature_lock`,
+  - `fallback_reason=comfy_timeout` (Comfy не вернул результат в таймауте).
 
 ### Контекст после лимитов (быстрый рестарт)
 1. Ветка эксперимента: `codex/signature-lock-comfy-experiment`.
