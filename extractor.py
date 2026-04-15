@@ -35,6 +35,7 @@ class ExtractionResult:
     bbox_px: dict
     bbox_norm: dict
     font_colors: dict
+    extraction_mode: str
 
 
 def _estimate_simple_background(img_rgb: np.ndarray) -> bool:
@@ -207,6 +208,192 @@ def _soft_alpha_from_binary_mask(mask: np.ndarray) -> np.ndarray:
     alpha[binary > 0] = np.maximum(alpha[binary > 0], 245)
     alpha[alpha < 10] = 0
     return alpha
+
+
+def _small_image_scale(h: int, w: int) -> float:
+    max_dim = max(h, w)
+    if max_dim < 700:
+        return 3.0
+    if max_dim < 1000:
+        return 2.0
+    return 1.0
+
+
+def _remove_small_components(mask: np.ndarray, min_area: int) -> np.ndarray:
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    clean = np.zeros_like(mask, dtype=np.uint8)
+    for i in range(1, n):
+        if int(stats[i, cv2.CC_STAT_AREA]) >= min_area:
+            clean[labels == i] = 255
+    return clean
+
+
+def _keep_main_text_components(mask: np.ndarray) -> np.ndarray:
+    """
+    Keep components likely belonging to the main title:
+    larger, closer to image center, and composing most foreground area.
+    """
+    h, w = mask.shape
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    if n <= 1:
+        return mask
+
+    center = np.array([w / 2.0, h / 2.0], dtype=np.float32)
+    records: list[tuple[int, float, int]] = []
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        cx, cy = centroids[i]
+        dist = float(np.linalg.norm(np.array([cx, cy], dtype=np.float32) - center) / max(w, h))
+        score = area * (1.0 - min(0.85, dist))
+        records.append((i, score, area))
+
+    records.sort(key=lambda x: x[1], reverse=True)
+    if not records:
+        return mask
+
+    max_area = max(r[2] for r in records)
+    min_keep = max(18, int(max_area * 0.01), int(0.00002 * h * w))
+    total_area = float(sum(r[2] for r in records if r[2] >= min_keep))
+    if total_area <= 0:
+        return mask
+
+    keep = np.zeros_like(mask, dtype=np.uint8)
+    acc = 0.0
+    for i, _, area in records:
+        if area < min_keep:
+            continue
+        keep[labels == i] = 255
+        acc += area
+        if acc / total_area >= 0.985:
+            break
+    return keep
+
+
+def _extract_text_mask_general(img_rgb: np.ndarray) -> np.ndarray:
+    """General text mask for non-card images (and fallback)."""
+    h, w = img_rgb.shape[:2]
+    scale = _small_image_scale(h, w)
+    if scale > 1.0:
+        up = cv2.resize(img_rgb, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    else:
+        up = img_rgb
+
+    hsv = cv2.cvtColor(up, cv2.COLOR_RGB2HSV)
+    s = hsv[:, :, 1]
+    v = hsv[:, :, 2]
+    gray = cv2.cvtColor(up, cv2.COLOR_RGB2GRAY)
+
+    dark_thr = min(145, int(np.percentile(v, 38) + 22))
+    dark = (v < dark_thr).astype(np.uint8) * 255
+    colorful = ((s > 36) & (v > 28)).astype(np.uint8) * 255
+    _, inv_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    edges = cv2.Canny(gray, 70, 170)
+
+    mask = cv2.bitwise_or(dark, colorful)
+    mask = cv2.bitwise_or(mask, inv_otsu)
+    mask = cv2.bitwise_or(mask, edges)
+
+    # Suppress pale background pixels.
+    pale_bg = ((s < 24) & (v > 180)).astype(np.uint8) * 255
+    mask = cv2.bitwise_and(mask, cv2.bitwise_not(pale_bg))
+
+    k = 2 if scale >= 2 else 1
+    kernel = np.ones((k + 1, k + 1), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    mask = _remove_border_touching_components(mask)
+    min_area = max(14, int(0.000015 * up.shape[0] * up.shape[1]))
+    mask = _remove_small_components(mask, min_area=min_area)
+    mask = _keep_main_text_components(mask)
+
+    if scale > 1.0:
+        mask = cv2.resize(mask, (w, h), interpolation=cv2.INTER_AREA)
+        _, mask = cv2.threshold(mask, 72, 255, cv2.THRESH_BINARY)
+    return mask
+
+
+def _detect_card_roi(img_rgb: np.ndarray) -> tuple[int, int, int, int] | None:
+    """
+    Detect central card/plate region (common for CF preview thumbnails inside pins).
+    """
+    h, w = img_rgb.shape[:2]
+    border = max(4, min(h, w) // 45)
+    border_pixels = np.concatenate(
+        [
+            img_rgb[:border, :, :].reshape(-1, 3),
+            img_rgb[h - border :, :, :].reshape(-1, 3),
+            img_rgb[:, :border, :].reshape(-1, 3),
+            img_rgb[:, w - border :, :].reshape(-1, 3),
+        ],
+        axis=0,
+    ).astype(np.float32)
+    bg = np.median(border_pixels, axis=0)
+    dist = np.linalg.norm(img_rgb.astype(np.float32) - bg[None, None, :], axis=2)
+    raw = np.where(dist > 16.0, 255, 0).astype(np.uint8)
+    raw = cv2.morphologyEx(raw, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8), iterations=1)
+    raw = cv2.morphologyEx(raw, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
+
+    n, _, stats, centroids = cv2.connectedComponentsWithStats((raw > 0).astype(np.uint8), connectivity=8)
+    best = None
+    best_score = -1.0
+    for i in range(1, n):
+        x, y, bw, bh, area = [int(v) for v in stats[i]]
+        if bw <= 0 or bh <= 0:
+            continue
+        area_ratio = area / float(h * w)
+        fill = area / float(bw * bh)
+        aspect = bw / float(bh)
+        if not (0.03 <= area_ratio <= 0.55):
+            continue
+        if not (0.85 <= aspect <= 3.0):
+            continue
+        if fill < 0.62:
+            continue
+        cx, cy = centroids[i]
+        dist_center = float(np.linalg.norm(np.array([cx - w / 2.0, cy - h / 2.0])) / max(w, h))
+        score = area * fill * (1.0 - min(0.9, dist_center))
+        if score > best_score:
+            best_score = score
+            best = (x, y, x + bw, y + bh)
+    return best
+
+
+def _build_card_mode_mask(img_rgb: np.ndarray) -> np.ndarray | None:
+    bbox = _detect_card_roi(img_rgb)
+    if bbox is None:
+        return None
+    x0, y0, x1, y1 = bbox
+    roi = img_rgb[y0:y1, x0:x1, :]
+    roi_mask = _extract_text_mask_from_plate_roi(roi)
+    roi_mask = _keep_main_text_components(roi_mask)
+    if _foreground_ratio(roi_mask) < 0.003:
+        return None
+    full = np.zeros(img_rgb.shape[:2], dtype=np.uint8)
+    full[y0:y1, x0:x1] = roi_mask
+    return full
+
+
+def _score_mask(mask: np.ndarray) -> float:
+    fg = _foreground_ratio(mask)
+    if fg <= 0.0:
+        return 0.0
+    # Prefer plausible text coverage.
+    if 0.02 <= fg <= 0.22:
+        fg_score = 1.0
+    elif fg < 0.02:
+        fg_score = fg / 0.02
+    else:
+        fg_score = max(0.0, 1.0 - (fg - 0.22) / 0.55)
+
+    bbox, fill, area = _largest_component_bbox_and_fill(mask)
+    rect_penalty = 0.0
+    if bbox is not None:
+        area_ratio = area / float(mask.size)
+        if area_ratio > 0.04 and fill > 0.82:
+            rect_penalty = 0.35
+
+    return max(0.0, fg_score - rect_penalty)
 
 
 def _fit_rgba_to_standard_canvas(rgba: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict, dict]:
@@ -482,21 +669,47 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
     simple_bg = _estimate_simple_background(rgb)
 
     rgba_np = np.array(source_img)
+    extraction_mode = "plain_mode"
+    candidate_masks: list[tuple[str, np.ndarray]] = []
+
+    # CV-first candidates
+    card_mask = _build_card_mode_mask(rgb)
+    if card_mask is not None:
+        extraction_mode = "card_mode"
+        candidate_masks.append(("card_mode", card_mask))
+    candidate_masks.append(("plain_mode", _extract_text_mask_general(rgb)))
+
+    rembg_mask = None
     try:
         rgba = _remove_background_with_rembg(source_img)
-        rgba_np = np.array(rgba)
-        alpha = rgba_np[:, :, 3]
-        mask = _postprocess_alpha(alpha, simple_bg=simple_bg)
-        if _looks_like_full_rectangle(mask):
-            logger.info("[%s] rembg kept full rectangle, switching to strict letter mask", font_id)
-            roi_mask = _letter_mask_from_rect_component(rgb, mask)
+        rembg_alpha = np.array(rgba)[:, :, 3]
+        rembg_mask = _postprocess_alpha(rembg_alpha, simple_bg=simple_bg)
+        if _looks_like_full_rectangle(rembg_mask):
+            roi_mask = _letter_mask_from_rect_component(rgb, rembg_mask)
             if roi_mask is not None and _foreground_ratio(roi_mask) > 0.003:
-                mask = roi_mask
-            else:
-                mask = _strict_letter_mask(rgb, simple_bg=simple_bg)
+                candidate_masks.append(("rembg_rect_refined", roi_mask))
+            candidate_masks.append(("rembg_strict", _strict_letter_mask(rgb, simple_bg=simple_bg)))
+        else:
+            candidate_masks.append(("rembg", rembg_mask))
     except Exception as exc:
         logger.warning("[%s] rembg unavailable/failed (%s). Using strict CV mask only.", font_id, exc)
-        mask = _strict_letter_mask(rgb, simple_bg=simple_bg)
+        candidate_masks.append(("strict_fallback", _strict_letter_mask(rgb, simple_bg=simple_bg)))
+
+    # Pick best mask by heuristic score.
+    best_name = "plain_mode"
+    best_mask = np.zeros(rgb.shape[:2], dtype=np.uint8)
+    best_score = -1.0
+    for name, cmask in candidate_masks:
+        if cmask is None:
+            continue
+        score = _score_mask(cmask)
+        if score > best_score:
+            best_score = score
+            best_mask = cmask
+            best_name = name
+
+    mask = _keep_main_text_components(best_mask)
+    extraction_mode = best_name
 
     alpha_soft = _soft_alpha_from_binary_mask(mask)
     rgba_np[:, :, 3] = alpha_soft
@@ -530,6 +743,7 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
     report_payload = {
         "font_id": font_id,
         "source_path": str(src),
+        "extraction_mode": extraction_mode,
         "overlay_path": str(overlay_path),
         "mask_path": str(mask_path),
         "overlay_size": [STANDARD_OVERLAY_SIZE, STANDARD_OVERLAY_SIZE],
@@ -588,6 +802,7 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         bbox_px=bbox_px,
         bbox_norm=bbox_norm,
         font_colors=font_colors,
+        extraction_mode=extraction_mode,
     )
 
 
