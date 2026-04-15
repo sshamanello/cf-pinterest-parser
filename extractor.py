@@ -80,6 +80,119 @@ def _postprocess_alpha(alpha: np.ndarray, simple_bg: bool) -> np.ndarray:
     return final_mask
 
 
+def _foreground_ratio(mask: np.ndarray) -> float:
+    return float(np.count_nonzero(mask > 0) / float(mask.size))
+
+
+def _looks_like_full_rectangle(mask: np.ndarray) -> bool:
+    """Detect failure mode when background was not removed and full card remains foreground."""
+    return _foreground_ratio(mask) >= 0.82
+
+
+def _remove_border_touching_components(mask: np.ndarray) -> np.ndarray:
+    """Keep only connected components that do not touch image borders."""
+    h, w = mask.shape
+    num_labels, labels = cv2.connectedComponents((mask > 0).astype(np.uint8), connectivity=8)
+    keep = np.zeros_like(mask, dtype=np.uint8)
+    min_area = max(30, int(0.00005 * h * w))
+
+    for label in range(1, num_labels):
+        ys, xs = np.where(labels == label)
+        if ys.size == 0:
+            continue
+        area = ys.size
+        if area < min_area:
+            continue
+        touches_border = np.any(ys == 0) or np.any(ys == h - 1) or np.any(xs == 0) or np.any(xs == w - 1)
+        if not touches_border:
+            keep[ys, xs] = 255
+    return keep
+
+
+def _border_distance_mask(img_rgb: np.ndarray, simple_bg: bool) -> np.ndarray:
+    """Build foreground mask as pixels that differ from dominant border color."""
+    h, w = img_rgb.shape[:2]
+    border = max(4, min(h, w) // 40)
+    border_pixels = np.concatenate(
+        [
+            img_rgb[:border, :, :].reshape(-1, 3),
+            img_rgb[h - border :, :, :].reshape(-1, 3),
+            img_rgb[:, :border, :].reshape(-1, 3),
+            img_rgb[:, w - border :, :].reshape(-1, 3),
+        ],
+        axis=0,
+    ).astype(np.float32)
+
+    bg_color = np.median(border_pixels, axis=0).astype(np.float32)
+    distances = np.linalg.norm(img_rgb.astype(np.float32) - bg_color[None, None, :], axis=2)
+    # Tighter threshold for simpler backgrounds, looser for textured cards.
+    threshold = 16.0 if simple_bg else 24.0
+    raw = np.where(distances > threshold, 255, 0).astype(np.uint8)
+
+    kernel = np.ones((2, 2), np.uint8)
+    raw = cv2.morphologyEx(raw, cv2.MORPH_OPEN, kernel, iterations=1)
+    raw = cv2.morphologyEx(raw, cv2.MORPH_CLOSE, kernel, iterations=1)
+    return _remove_border_touching_components(raw)
+
+
+def _otsu_text_mask(img_rgb: np.ndarray) -> np.ndarray:
+    """Try binary masks for dark/light text and keep a plausible one."""
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    blur = cv2.GaussianBlur(gray, (3, 3), 0)
+    _, inv = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    _, direct = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    inv = _remove_border_touching_components(inv)
+    direct = _remove_border_touching_components(direct)
+
+    inv_ratio = _foreground_ratio(inv)
+    direct_ratio = _foreground_ratio(direct)
+
+    def score(r: float) -> float:
+        # Prefer masks roughly in text-coverage range
+        if 0.01 <= r <= 0.40:
+            return 1.0
+        if r < 0.01:
+            return r / 0.01
+        return max(0.0, 1.0 - (r - 0.40) / 0.60)
+
+    return inv if score(inv_ratio) >= score(direct_ratio) else direct
+
+
+def _strict_letter_mask(img_rgb: np.ndarray, simple_bg: bool) -> np.ndarray:
+    """
+    Fallback for 'rectangle kept as foreground':
+    combine border-color segmentation and Otsu text extraction, keep stricter candidate.
+    """
+    by_color = _border_distance_mask(img_rgb, simple_bg=simple_bg)
+    by_otsu = _otsu_text_mask(img_rgb)
+
+    color_ratio = _foreground_ratio(by_color)
+    otsu_ratio = _foreground_ratio(by_otsu)
+
+    # Choose mask that is non-empty and less likely to keep background.
+    candidates = []
+    if color_ratio > 0:
+        candidates.append((by_color, color_ratio))
+    if otsu_ratio > 0:
+        candidates.append((by_otsu, otsu_ratio))
+
+    if not candidates:
+        return np.zeros(img_rgb.shape[:2], dtype=np.uint8)
+
+    # Keep the leaner mask if it remains plausible for text.
+    plausible = [c for c in candidates if 0.005 <= c[1] <= 0.45]
+    if plausible:
+        chosen = min(plausible, key=lambda x: x[1])[0]
+    else:
+        chosen = min(candidates, key=lambda x: x[1])[0]
+
+    # Edge smoothing without expanding to background.
+    blurred = cv2.GaussianBlur(chosen, (3, 3), 0)
+    _, chosen = cv2.threshold(blurred, 24, 255, cv2.THRESH_BINARY)
+    return chosen
+
+
 def _compute_quality(mask: np.ndarray) -> tuple[float, float, float]:
     total = float(mask.size)
     foreground_ratio = float(np.count_nonzero(mask > 0) / total)
@@ -114,11 +227,19 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
     rgb = np.array(source_img.convert("RGB"))
     simple_bg = _estimate_simple_background(rgb)
 
-    rgba = _remove_background_with_rembg(source_img)
-    rgba_np = np.array(rgba)
-    alpha = rgba_np[:, :, 3]
+    rgba_np = np.array(source_img)
+    try:
+        rgba = _remove_background_with_rembg(source_img)
+        rgba_np = np.array(rgba)
+        alpha = rgba_np[:, :, 3]
+        mask = _postprocess_alpha(alpha, simple_bg=simple_bg)
+        if _looks_like_full_rectangle(mask):
+            logger.info("[%s] rembg kept full rectangle, switching to strict letter mask", font_id)
+            mask = _strict_letter_mask(rgb, simple_bg=simple_bg)
+    except Exception as exc:
+        logger.warning("[%s] rembg unavailable/failed (%s). Using strict CV mask only.", font_id, exc)
+        mask = _strict_letter_mask(rgb, simple_bg=simple_bg)
 
-    mask = _postprocess_alpha(alpha, simple_bg=simple_bg)
     rgba_np[:, :, 3] = mask
     overlay = Image.fromarray(rgba_np, mode="RGBA")
     mask_image = Image.fromarray(mask, mode="L")
