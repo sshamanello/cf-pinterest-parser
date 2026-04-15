@@ -131,7 +131,9 @@ def _extract_text_mask_from_plate_roi(roi_rgb: np.ndarray) -> np.ndarray:
     Extract text-like foreground from a plate/card ROI.
     Keeps colorful letters and dark contours, rejects pale background.
     """
-    hsv = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2HSV)
+    # Upscale before segmentation to reduce staircase artifacts on final edges.
+    roi_up = cv2.resize(roi_rgb, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    hsv = cv2.cvtColor(roi_up, cv2.COLOR_RGB2HSV)
     h, s, v = cv2.split(hsv)
 
     # Colorful glyphs (pink/yellow/green/blue etc.)
@@ -151,15 +153,54 @@ def _extract_text_mask_from_plate_roi(roi_rgb: np.ndarray) -> np.ndarray:
     # Remove tiny noise components.
     n, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
     clean = np.zeros_like(mask)
-    min_area = max(24, int(0.00008 * roi_rgb.shape[0] * roi_rgb.shape[1]))
-    for i in range(1, n):
-        area = int(stats[i, cv2.CC_STAT_AREA])
-        if area >= min_area:
-            clean[labels == i] = 255
+    if n > 1:
+        areas = stats[1:, cv2.CC_STAT_AREA].astype(np.int64)
+        largest = int(areas.max())
+        min_area = max(40, int(0.00012 * roi_up.shape[0] * roi_up.shape[1]), int(largest * 0.004))
+        main_area = max(min_area, int(largest * 0.06))
+        attach_area = max(min_area, int(largest * 0.008))
+
+        # 1) Keep only major glyph components.
+        main = np.zeros_like(mask)
+        for i in range(1, n):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area >= main_area:
+                main[labels == i] = 255
+
+        # 2) Keep nearby small accents if they are close to major glyphs.
+        if np.count_nonzero(main) > 0:
+            near = cv2.dilate(main, np.ones((7, 7), np.uint8), iterations=1)
+            for i in range(1, n):
+                area = int(stats[i, cv2.CC_STAT_AREA])
+                if area < attach_area or area >= main_area:
+                    continue
+                comp = (labels == i)
+                if np.any(near[comp] > 0):
+                    main[comp] = 255
+            clean = main
 
     # Slightly thicken thin glyph strokes.
     clean = cv2.dilate(clean, np.ones((2, 2), np.uint8), iterations=1)
+    # Downscale back to original ROI size.
+    clean = cv2.resize(clean, (roi_rgb.shape[1], roi_rgb.shape[0]), interpolation=cv2.INTER_AREA)
+    _, clean = cv2.threshold(clean, 64, 255, cv2.THRESH_BINARY)
     return clean
+
+
+def _soft_alpha_from_binary_mask(mask: np.ndarray) -> np.ndarray:
+    """
+    Convert a binary mask to soft alpha for cleaner, less pixelated edges.
+    """
+    binary = (mask > 0).astype(np.uint8)
+    soft = cv2.GaussianBlur((binary * 255).astype(np.float32), (0, 0), sigmaX=0.9, sigmaY=0.9)
+    soft = np.clip(soft, 0, 255).astype(np.uint8)
+
+    alpha = np.zeros_like(mask, dtype=np.uint8)
+    edge_band = cv2.dilate(binary, np.ones((3, 3), np.uint8), iterations=1) > 0
+    alpha[edge_band] = soft[edge_band]
+    alpha[binary > 0] = np.maximum(alpha[binary > 0], 245)
+    alpha[alpha < 10] = 0
+    return alpha
 
 
 def _letter_mask_from_rect_component(img_rgb: np.ndarray, rough_mask: np.ndarray) -> np.ndarray | None:
@@ -353,7 +394,8 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         logger.warning("[%s] rembg unavailable/failed (%s). Using strict CV mask only.", font_id, exc)
         mask = _strict_letter_mask(rgb, simple_bg=simple_bg)
 
-    rgba_np[:, :, 3] = mask
+    alpha_soft = _soft_alpha_from_binary_mask(mask)
+    rgba_np[:, :, 3] = alpha_soft
     overlay = Image.fromarray(rgba_np, mode="RGBA")
     mask_image = Image.fromarray(mask, mode="L")
 
