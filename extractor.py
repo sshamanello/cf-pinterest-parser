@@ -1,8 +1,10 @@
 import argparse
+import csv
 import io
 import json
 import logging
 import shutil
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +38,9 @@ class ExtractionResult:
     bbox_norm: dict
     font_colors: dict
     extraction_mode: str
+    qc_metrics: dict
+    qc_decision: str
+    retry_count: int
 
 
 def _estimate_simple_background(img_rgb: np.ndarray) -> bool:
@@ -269,7 +274,7 @@ def _keep_main_text_components(mask: np.ndarray) -> np.ndarray:
     return keep
 
 
-def _extract_text_mask_general(img_rgb: np.ndarray) -> np.ndarray:
+def _extract_text_mask_general(img_rgb: np.ndarray, profile: str = "default") -> np.ndarray:
     """General text mask for non-card images (and fallback)."""
     h, w = img_rgb.shape[:2]
     scale = _small_image_scale(h, w)
@@ -283,18 +288,36 @@ def _extract_text_mask_general(img_rgb: np.ndarray) -> np.ndarray:
     v = hsv[:, :, 2]
     gray = cv2.cvtColor(up, cv2.COLOR_RGB2GRAY)
 
-    dark_thr = min(145, int(np.percentile(v, 38) + 22))
+    if profile == "aggressive":
+        dark_thr = min(165, int(np.percentile(v, 44) + 25))
+        s_thr = 28
+        pale_s = 30
+        pale_v = 188
+        canny_a, canny_b = 55, 145
+    elif profile == "conservative":
+        dark_thr = min(135, int(np.percentile(v, 34) + 18))
+        s_thr = 44
+        pale_s = 20
+        pale_v = 176
+        canny_a, canny_b = 85, 190
+    else:
+        dark_thr = min(145, int(np.percentile(v, 38) + 22))
+        s_thr = 36
+        pale_s = 24
+        pale_v = 180
+        canny_a, canny_b = 70, 170
+
     dark = (v < dark_thr).astype(np.uint8) * 255
-    colorful = ((s > 36) & (v > 28)).astype(np.uint8) * 255
+    colorful = ((s > s_thr) & (v > 28)).astype(np.uint8) * 255
     _, inv_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    edges = cv2.Canny(gray, 70, 170)
+    edges = cv2.Canny(gray, canny_a, canny_b)
 
     mask = cv2.bitwise_or(dark, colorful)
     mask = cv2.bitwise_or(mask, inv_otsu)
     mask = cv2.bitwise_or(mask, edges)
 
     # Suppress pale background pixels.
-    pale_bg = ((s < 24) & (v > 180)).astype(np.uint8) * 255
+    pale_bg = ((s < pale_s) & (v > pale_v)).astype(np.uint8) * 255
     mask = cv2.bitwise_and(mask, cv2.bitwise_not(pale_bg))
 
     k = 2 if scale >= 2 else 1
@@ -304,6 +327,10 @@ def _extract_text_mask_general(img_rgb: np.ndarray) -> np.ndarray:
 
     mask = _remove_border_touching_components(mask)
     min_area = max(14, int(0.000015 * up.shape[0] * up.shape[1]))
+    if profile == "aggressive":
+        min_area = max(10, int(min_area * 0.6))
+    elif profile == "conservative":
+        min_area = int(min_area * 1.4)
     mask = _remove_small_components(mask, min_area=min_area)
     mask = _keep_main_text_components(mask)
 
@@ -651,6 +678,61 @@ def _compute_quality(mask: np.ndarray) -> tuple[float, float, float]:
     return quality, foreground_ratio, transparency_ratio
 
 
+def _compute_qc_metrics(mask: np.ndarray, alpha: np.ndarray) -> dict:
+    total = float(mask.size)
+    fg = float(np.count_nonzero(mask > 0) / total)
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    comp_count = max(0, n - 1)
+    largest_area = 0
+    if n > 1:
+        largest_area = int(stats[1:, cv2.CC_STAT_AREA].max())
+
+    # Noise score: many tiny components relative to foreground.
+    tiny_area_thr = max(12, int(0.00001 * mask.shape[0] * mask.shape[1]))
+    tiny_components = 0
+    for i in range(1, n):
+        if int(stats[i, cv2.CC_STAT_AREA]) < tiny_area_thr:
+            tiny_components += 1
+    noise_score = float(min(1.0, tiny_components / 40.0))
+
+    # Stroke preservation proxy: edge density inside foreground.
+    edges = cv2.Canny(mask, 40, 120)
+    edge_density = float(np.count_nonzero(edges > 0) / max(1, np.count_nonzero(mask > 0)))
+    stroke_loss_score = float(max(0.0, 1.0 - min(1.0, edge_density / 0.32)))
+
+    # Edge artifact proxy from soft alpha.
+    alpha_nonzero = alpha[alpha > 0]
+    if alpha_nonzero.size == 0:
+        edge_artifact_score = 1.0
+    else:
+        weak = np.count_nonzero((alpha > 0) & (alpha < 40))
+        edge_artifact_score = float(min(1.0, weak / max(1, np.count_nonzero(alpha > 0))))
+
+    return {
+        "component_count": comp_count,
+        "largest_component_area": largest_area,
+        "noise_score": round(noise_score, 4),
+        "stroke_loss_score": round(stroke_loss_score, 4),
+        "edge_artifact_score": round(edge_artifact_score, 4),
+        "foreground_ratio": round(fg, 4),
+    }
+
+
+def _qc_decision(quality: float, fg_ratio: float, metrics: dict) -> tuple[str, str]:
+    noise = float(metrics.get("noise_score", 1.0))
+    stroke_loss = float(metrics.get("stroke_loss_score", 1.0))
+    edge_art = float(metrics.get("edge_artifact_score", 1.0))
+
+    if quality < 0.52 or fg_ratio < 0.012 or fg_ratio > 0.52:
+        return "MANUAL_CHECK", "hard_quality_fail"
+    if stroke_loss > 0.86:
+        return "MANUAL_CHECK", "stroke_loss_high"
+    if quality < 0.70 or noise > 0.92 or edge_art > 0.38 or stroke_loss > 0.70:
+        return "RETRY", "borderline_quality"
+    return "PASS", ""
+
+
 def _save_report(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -677,7 +759,7 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
     if card_mask is not None:
         extraction_mode = "card_mode"
         candidate_masks.append(("card_mode", card_mask))
-    candidate_masks.append(("plain_mode", _extract_text_mask_general(rgb)))
+    candidate_masks.append(("plain_mode", _extract_text_mask_general(rgb, profile="default")))
 
     rembg_mask = None
     try:
@@ -695,43 +777,88 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         logger.warning("[%s] rembg unavailable/failed (%s). Using strict CV mask only.", font_id, exc)
         candidate_masks.append(("strict_fallback", _strict_letter_mask(rgb, simple_bg=simple_bg)))
 
-    # Pick best mask by heuristic score.
-    best_name = "plain_mode"
-    best_mask = np.zeros(rgb.shape[:2], dtype=np.uint8)
-    best_score = -1.0
-    for name, cmask in candidate_masks:
-        if cmask is None:
-            continue
-        score = _score_mask(cmask)
-        if score > best_score:
-            best_score = score
-            best_mask = cmask
-            best_name = name
+    def choose_best(cands: list[tuple[str, np.ndarray]]) -> tuple[str, np.ndarray]:
+        best_name_local = "plain_mode"
+        best_mask_local = np.zeros(rgb.shape[:2], dtype=np.uint8)
+        best_score_local = -1.0
+        for name, cmask in cands:
+            if cmask is None:
+                continue
+            score = _score_mask(cmask)
+            if score > best_score_local:
+                best_score_local = score
+                best_mask_local = cmask
+                best_name_local = name
+        return best_name_local, _keep_main_text_components(best_mask_local)
 
-    mask = _keep_main_text_components(best_mask)
+    retry_count = 0
+    best_name, mask = choose_best(candidate_masks)
     extraction_mode = best_name
 
-    alpha_soft = _soft_alpha_from_binary_mask(mask)
-    rgba_np[:, :, 3] = alpha_soft
+    def render_and_qc(mask_in: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict, dict, dict, float, float, float, dict]:
+        alpha_soft_local = _soft_alpha_from_binary_mask(mask_in)
+        rgba_local = np.array(source_img)
+        rgba_local[:, :, 3] = alpha_soft_local
+        canvas_rgba_local, canvas_mask_local, bbox_px_local, bbox_norm_local = _fit_rgba_to_standard_canvas(rgba_local)
+        quality_local, fg_local, tr_local = _compute_quality(canvas_mask_local)
+        qc_metrics_local = _compute_qc_metrics(canvas_mask_local, canvas_rgba_local[:, :, 3])
+        return (
+            canvas_rgba_local,
+            canvas_mask_local,
+            bbox_px_local,
+            bbox_norm_local,
+            qc_metrics_local,
+            quality_local,
+            fg_local,
+            tr_local,
+            _extract_font_color_info(canvas_rgba_local),
+        )
 
-    canvas_rgba, canvas_mask, bbox_px, bbox_norm = _fit_rgba_to_standard_canvas(rgba_np)
+    (
+        canvas_rgba,
+        canvas_mask,
+        bbox_px,
+        bbox_norm,
+        qc_metrics,
+        quality,
+        fg_ratio,
+        tr_ratio,
+        font_colors,
+    ) = render_and_qc(mask)
+
+    qc_decision, qc_reason = _qc_decision(quality, fg_ratio, qc_metrics)
+
+    # Retry policy: expand candidate set only for borderline outputs.
+    if qc_decision == "RETRY":
+        retry_count = 1
+        retry_candidates = list(candidate_masks)
+        retry_candidates.append(("plain_mode_aggressive", _extract_text_mask_general(rgb, profile="aggressive")))
+        retry_candidates.append(("plain_mode_conservative", _extract_text_mask_general(rgb, profile="conservative")))
+        retry_candidates.append(("strict_retry", _strict_letter_mask(rgb, simple_bg=simple_bg)))
+        best_name, mask = choose_best(retry_candidates)
+        extraction_mode = best_name
+        (
+            canvas_rgba,
+            canvas_mask,
+            bbox_px,
+            bbox_norm,
+            qc_metrics,
+            quality,
+            fg_ratio,
+            tr_ratio,
+            font_colors,
+        ) = render_and_qc(mask)
+        qc_decision, qc_reason = _qc_decision(quality, fg_ratio, qc_metrics)
+        # Accept borderline outputs after one retry to keep throughput high on large batches.
+        if qc_decision == "RETRY":
+            qc_decision = "PASS"
+            qc_reason = "accepted_after_retry"
+
     overlay = Image.fromarray(canvas_rgba, mode="RGBA")
     mask_image = Image.fromarray(canvas_mask, mode="L")
-    font_colors = _extract_font_color_info(canvas_rgba)
 
-    quality, fg_ratio, tr_ratio = _compute_quality(canvas_mask)
-
-    manual_reason = ""
-    needs_manual_check = False
-    if quality < 0.55:
-        needs_manual_check = True
-        manual_reason = "low_quality_score"
-    elif fg_ratio < 0.02:
-        needs_manual_check = True
-        manual_reason = "too_little_foreground"
-    elif fg_ratio > 0.48:
-        needs_manual_check = True
-        manual_reason = "too_much_foreground"
+    needs_manual_check = qc_decision == "MANUAL_CHECK"
+    manual_reason = qc_reason if needs_manual_check else ""
 
     # Always write latest artifacts to the root font folder.
     overlay_path = out_dir / "extracted_overlay.png"
@@ -751,6 +878,10 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         "bbox_norm": bbox_norm,
         "recommended_scale_pct": round(bbox_norm["w"] * 100.0, 2),
         "font_colors": font_colors,
+        "qc_decision": qc_decision,
+        "qc_reason": qc_reason,
+        "retry_count": retry_count,
+        "qc_metrics": qc_metrics,
         "quality_score": round(quality, 4),
         "foreground_ratio": round(fg_ratio, 4),
         "transparency_ratio": round(tr_ratio, 4),
@@ -779,10 +910,13 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         _save_report(manual_report, manual_payload)
 
     logger.info(
-        "[%s] quality=%.3f foreground=%.3f manual_check=%s",
+        "[%s] mode=%s quality=%.3f foreground=%.3f qc=%s retry=%d manual_check=%s",
         font_id,
+        extraction_mode,
         quality,
         fg_ratio,
+        qc_decision,
+        retry_count,
         needs_manual_check,
     )
 
@@ -803,6 +937,9 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         bbox_norm=bbox_norm,
         font_colors=font_colors,
         extraction_mode=extraction_mode,
+        qc_metrics=qc_metrics,
+        qc_decision=qc_decision,
+        retry_count=retry_count,
     )
 
 
@@ -823,7 +960,85 @@ def run_batch(input_path: str | Path, output_root: str | Path = "output") -> lis
             results.append(extract_overlay(file_path, output_root=output_root))
         except Exception as exc:
             logger.exception("Failed to process %s: %s", file_path, exc)
+    _write_batch_reports(results, output_root=output_root)
     return results
+
+
+def _write_batch_reports(results: list[ExtractionResult], output_root: str | Path) -> None:
+    out_root = Path(output_root)
+    reports_dir = out_root / "_reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    total = len(results)
+    pass_count = sum(1 for r in results if r.qc_decision == "PASS")
+    retry_count = sum(1 for r in results if r.retry_count > 0)
+    manual_count = sum(1 for r in results if r.needs_manual_check)
+
+    by_mode: dict[str, int] = {}
+    for r in results:
+        by_mode[r.extraction_mode] = by_mode.get(r.extraction_mode, 0) + 1
+
+    summary = {
+        "generated_at": now,
+        "total": total,
+        "pass_count": pass_count,
+        "retry_count": retry_count,
+        "manual_check_count": manual_count,
+        "pass_rate": round((pass_count / total), 4) if total else 0.0,
+        "manual_check_rate": round((manual_count / total), 4) if total else 0.0,
+        "by_extraction_mode": by_mode,
+    }
+
+    json_path = reports_dir / "extractor_batch_report.json"
+    json_path.write_text(json.dumps({"summary": summary, "items": [r.__dict__ for r in results]}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    csv_path = reports_dir / "extractor_batch_report.csv"
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "font_id",
+                "source_path",
+                "extraction_mode",
+                "qc_decision",
+                "retry_count",
+                "needs_manual_check",
+                "manual_reason",
+                "quality_score",
+                "foreground_ratio",
+                "transparency_ratio",
+                "dominant_color_1",
+                "contrast_hint",
+                "overlay_path",
+                "mask_path",
+                "report_path",
+            ],
+        )
+        writer.writeheader()
+        for r in results:
+            dominant = r.font_colors.get("dominant_colors", [])
+            writer.writerow(
+                {
+                    "font_id": r.font_id,
+                    "source_path": r.source_path,
+                    "extraction_mode": r.extraction_mode,
+                    "qc_decision": r.qc_decision,
+                    "retry_count": r.retry_count,
+                    "needs_manual_check": r.needs_manual_check,
+                    "manual_reason": r.manual_reason,
+                    "quality_score": round(r.quality_score, 4),
+                    "foreground_ratio": round(r.foreground_ratio, 4),
+                    "transparency_ratio": round(r.transparency_ratio, 4),
+                    "dominant_color_1": dominant[0] if dominant else "",
+                    "contrast_hint": r.font_colors.get("contrast_hint", ""),
+                    "overlay_path": r.overlay_path,
+                    "mask_path": r.mask_path,
+                    "report_path": r.report_path,
+                }
+            )
+
+    logger.info("Batch reports saved: %s and %s", json_path, csv_path)
 
 
 def _build_parser() -> argparse.ArgumentParser:

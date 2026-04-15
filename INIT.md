@@ -12,6 +12,20 @@
 
 ## Изменения 2026-04-15
 
+- Внедрён универсальный `QC rule-engine` для масштабной пакетной обработки:
+  - новые QC-метрики в отчёте: `noise_score`, `stroke_loss_score`, `edge_artifact_score`, `component_count`,
+  - решение по каждому файлу: `qc_decision` (`PASS` / `RETRY` / `MANUAL_CHECK`),
+  - `retry_count` фиксируется в результате и отчётах.
+- Добавлена `retry policy`:
+  - для пограничных кейсов выполняется один автоповтор с расширенным набором масок (`plain_mode_aggressive`, `plain_mode_conservative`, `strict_retry`),
+  - после retry пограничный кейс принимается как `PASS` для сохранения throughput, а жёстко плохие — в `MANUAL_CHECK`.
+- Добавлен `batch evaluator` для тысяч файлов:
+  - автоматически создаются отчёты `output/_reports/extractor_batch_report.json` и `.csv`,
+  - есть сводка: `pass_rate`, `manual_check_rate`, `by_extraction_mode`, счётчики `pass/retry/manual`.
+- CLI-сводка `run.py extract` обновлена:
+  - выводит `Processed | pass | retried | manual_check`.
+- Smoke benchmark на текущем тест-наборе:
+  - `total=11`, `pass=9`, `manual_check=2`, `pass_rate=0.8182`, `manual_check_rate=0.1818`.
 - Внедрён `extractor v2` с несколькими стратегиями маски вместо одного пути:
   - `plain_mode` (общая сегментация текста),
   - `card_mode` (работа через ROI карточки превью),

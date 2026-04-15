@@ -135,7 +135,15 @@ def cmd_extract(input_path: str, output_root: str = "output"):
         return
 
     manual_count = sum(1 for r in results if r.needs_manual_check)
-    logger.info("[OK] Processed: %d | manual_check: %d", len(results), manual_count)
+    pass_count = sum(1 for r in results if r.qc_decision == "PASS")
+    retry_count = sum(1 for r in results if r.retry_count > 0)
+    logger.info(
+        "[OK] Processed: %d | pass: %d | retried: %d | manual_check: %d",
+        len(results),
+        pass_count,
+        retry_count,
+        manual_count,
+    )
 
 
 def main():
