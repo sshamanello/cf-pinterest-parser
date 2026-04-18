@@ -95,6 +95,41 @@ def _analyze_source_profile(img_rgb: np.ndarray) -> dict:
     }
 
 
+def _crop_working_zone_rgba(src_rgba: Image.Image) -> tuple[Image.Image, dict]:
+    """
+    Trim outer black borders and keep the inner working rectangle.
+    Returns cropped image and crop metadata.
+    """
+    arr = np.array(src_rgba.convert("RGBA"))
+    rgb = arr[:, :, :3]
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    non_black = gray > 16
+
+    h, w = gray.shape
+    row_fill = np.mean(non_black, axis=1)
+    col_fill = np.mean(non_black, axis=0)
+    y_idx = np.where(row_fill > 0.06)[0]
+    x_idx = np.where(col_fill > 0.06)[0]
+
+    if y_idx.size == 0 or x_idx.size == 0:
+        return src_rgba, {"applied": False, "x": 0, "y": 0, "w": w, "h": h}
+
+    y0, y1 = int(y_idx.min()), int(y_idx.max()) + 1
+    x0, x1 = int(x_idx.min()), int(x_idx.max()) + 1
+    pad_y = max(2, int(0.01 * h))
+    pad_x = max(2, int(0.01 * w))
+    y0 = max(0, y0 - pad_y)
+    y1 = min(h, y1 + pad_y)
+    x0 = max(0, x0 - pad_x)
+    x1 = min(w, x1 + pad_x)
+
+    if (x1 - x0) < int(0.45 * w) or (y1 - y0) < int(0.45 * h):
+        return src_rgba, {"applied": False, "x": 0, "y": 0, "w": w, "h": h}
+
+    cropped = src_rgba.crop((x0, y0, x1, y1))
+    return cropped, {"applied": True, "x": x0, "y": y0, "w": (x1 - x0), "h": (y1 - y0)}
+
+
 def _enhance_gray(gray: np.ndarray) -> np.ndarray:
     clahe = cv2.createCLAHE(clipLimit=2.6, tileGridSize=(8, 8))
     return clahe.apply(gray)
@@ -103,7 +138,17 @@ def _enhance_gray(gray: np.ndarray) -> np.ndarray:
 def _remove_background_with_rembg(image: Image.Image) -> Image.Image:
     in_buf = io.BytesIO()
     image.save(in_buf, format="PNG")
-    output_bytes = remove(in_buf.getvalue())
+    try:
+        output_bytes = remove(
+            in_buf.getvalue(),
+            alpha_matting=True,
+            alpha_matting_foreground_threshold=240,
+            alpha_matting_background_threshold=10,
+            alpha_matting_erode_size=8,
+        )
+    except Exception:
+        # Fallback to default remove if alpha matting backend is unavailable.
+        output_bytes = remove(in_buf.getvalue())
     return Image.open(io.BytesIO(output_bytes)).convert("RGBA")
 
 
@@ -235,18 +280,32 @@ def _extract_text_mask_from_plate_roi(roi_rgb: np.ndarray) -> np.ndarray:
     return clean
 
 
-def _soft_alpha_from_binary_mask(mask: np.ndarray) -> np.ndarray:
+def _build_core_soft_masks(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    Convert a binary mask to soft alpha for cleaner, less pixelated edges.
+    Build two-layer masks:
+    - core: solid inner glyph body
+    - soft: outer ring for smooth edges / outline retention
     """
     binary = (mask > 0).astype(np.uint8)
-    soft = cv2.GaussianBlur((binary * 255).astype(np.float32), (0, 0), sigmaX=1.1, sigmaY=1.1)
-    soft = np.clip(soft, 0, 255).astype(np.uint8)
+    core = cv2.erode(binary, np.ones((3, 3), np.uint8), iterations=1)
+    if np.count_nonzero(core) == 0:
+        core = binary.copy()
+    soft = cv2.dilate(binary, np.ones((3, 3), np.uint8), iterations=1)
+    return core, soft
+
+
+def _soft_alpha_from_binary_mask(mask: np.ndarray) -> np.ndarray:
+    """
+    Convert a binary mask to alpha using dual-layer (core+soft) strategy.
+    """
+    core, soft = _build_core_soft_masks(mask)
+    soft_blur = cv2.GaussianBlur((soft * 255).astype(np.float32), (0, 0), sigmaX=1.15, sigmaY=1.15)
+    soft_blur = np.clip(soft_blur, 0, 255).astype(np.uint8)
 
     alpha = np.zeros_like(mask, dtype=np.uint8)
-    edge_outer = (cv2.dilate(binary, np.ones((3, 3), np.uint8), iterations=1) > 0) & (binary == 0)
-    alpha[edge_outer] = np.maximum(alpha[edge_outer], soft[edge_outer])
-    alpha[binary > 0] = 255
+    soft_band = (soft > 0) & (core == 0)
+    alpha[soft_band] = np.maximum(alpha[soft_band], soft_blur[soft_band])
+    alpha[core > 0] = 255
     alpha[alpha < 10] = 0
     return alpha
 
@@ -299,6 +358,7 @@ def _finalize_text_mask(mask: np.ndarray, img_rgb: np.ndarray) -> np.ndarray:
 
     min_area = max(12, int(0.00001 * h * w))
     mask = _remove_small_components(mask, min_area=min_area)
+    mask = _keep_central_large_components(mask)
     mask = _drop_lower_decorative_components(mask)
     return mask
 
@@ -330,28 +390,69 @@ def _drop_lower_decorative_components(mask: np.ndarray) -> np.ndarray:
 
     upper = [r for r in recs if (r[7] / max(1.0, h)) <= 0.58]
     anchor = max(upper, key=lambda r: r[5]) if upper else max(recs, key=lambda r: r[5])
-    _, ax, ay, aw, ah, a_area, _, a_cy = anchor
+    _, ax, ay, aw, ah, a_area, a_cx, a_cy = anchor
     y_limit = min(float(h), float(a_cy + 0.13 * h), float(ay + ah + 0.09 * h))
+    y_floor = max(0.0, float(ay - 0.12 * h))
     min_area = max(16, int(a_area * 0.004))
     large_lower_area = 0
     large_lower_count = 0
-    for _, _, y, _, bh, area, _, cy in recs:
+    lower_text_like_count = 0
+    lower_x0 = w
+    lower_x1 = 0
+    for _, x, y, bw, bh, area, _, cy in recs:
         if cy <= y_limit:
             continue
+        if area >= int(a_area * 0.01) and area <= int(a_area * 0.22) and bw <= int(0.45 * w) and bh >= int(0.04 * h):
+            lower_text_like_count += 1
+            lower_x0 = min(lower_x0, x)
+            lower_x1 = max(lower_x1, x + bw)
         if area >= int(a_area * 0.12) and y >= int(ay + 0.45 * ah):
             large_lower_area += area
             large_lower_count += 1
 
+    # If lower region looks like a true second text line, do not trim it.
+    if lower_text_like_count >= 3:
+        return mask
+    if lower_text_like_count >= 2 and (lower_x1 - lower_x0) >= int(0.42 * w):
+        return mask
+
     # Activate removal only when we clearly see detached lower decorative mass.
     if large_lower_count == 0 and large_lower_area < int(a_area * 0.22):
+        # Still allow cleanup of tiny decorative elements above anchor.
+        keep_upper_only = np.zeros_like(mask, dtype=np.uint8)
+        # Build coarse main x-range from largest components.
+        main_records = sorted(recs, key=lambda r: r[5], reverse=True)[:3]
+        main_x0 = min(r[1] for r in main_records)
+        main_x1 = max(r[1] + r[3] for r in main_records)
+        for i, x, y, bw, bh, area, _, cy in recs:
+            if area < min_area:
+                continue
+            # Remove isolated components too far from main text x-range.
+            cx = x + bw / 2.0
+            if cx < (main_x0 - 0.08 * w) or cx > (main_x1 + 0.08 * w):
+                if area < int(a_area * 0.2):
+                    continue
+            # Remove very high tiny icons and thin top strips.
+            if cy < y_floor or cy < (a_cy - 0.06 * h):
+                aspect = bw / max(1.0, bh)
+                if area < int(a_area * 0.08) or (aspect > 3.2 and bh < int(0.14 * h)):
+                    continue
+            keep_upper_only[labels == i] = 255
+        if np.count_nonzero(keep_upper_only > 0) >= int(0.7 * np.count_nonzero(mask > 0)):
+            return keep_upper_only
         return mask
 
     keep = np.zeros_like(mask, dtype=np.uint8)
     for i, x, y, bw, bh, area, _, cy in recs:
         if area < min_area:
             continue
-        if cy <= y_limit:
-            keep[labels == i] = 255
+        if cy > y_limit:
+            continue
+        if cy < y_floor or cy < (a_cy - 0.06 * h):
+            aspect = bw / max(1.0, bh)
+            if area < int(a_area * 0.08) or (aspect > 3.2 and bh < int(0.14 * h)):
+                continue
+        keep[labels == i] = 255
 
     if np.count_nonzero(keep > 0) < int(0.12 * a_area):
         return mask
@@ -374,6 +475,58 @@ def _remove_small_components(mask: np.ndarray, min_area: int) -> np.ndarray:
         if int(stats[i, cv2.CC_STAT_AREA]) >= min_area:
             clean[labels == i] = 255
     return clean
+
+
+def _keep_central_large_components(mask: np.ndarray) -> np.ndarray:
+    """
+    Keep only large central connected components (main object cluster).
+    Removes corner icons/logos and distant islands.
+    """
+    h, w = mask.shape
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    if n <= 1:
+        return mask
+
+    center = np.array([w / 2.0, h / 2.0], dtype=np.float32)
+    records = []
+    for i in range(1, n):
+        x = int(stats[i, cv2.CC_STAT_LEFT])
+        y = int(stats[i, cv2.CC_STAT_TOP])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area <= 0:
+            continue
+        cx, cy = centroids[i]
+        dist = float(np.linalg.norm(np.array([cx, cy], dtype=np.float32) - center) / max(w, h))
+        score = area * (1.0 - min(0.9, dist))
+        records.append((i, x, y, bw, bh, area, cx, cy, dist, score))
+
+    if not records:
+        return mask
+
+    anchor = max(records, key=lambda r: r[9])
+    _, ax, ay, aw, ah, a_area, _, _, _, _ = anchor
+    min_area = max(14, int(a_area * 0.01), int(0.000015 * h * w))
+    x0 = max(0, int(ax - 0.22 * w))
+    x1 = min(w, int(ax + aw + 0.22 * w))
+    y0 = max(0, int(ay - 0.20 * h))
+    y1 = min(h, int(ay + ah + 0.28 * h))
+
+    keep = np.zeros_like(mask, dtype=np.uint8)
+    for i, x, y, bw, bh, area, cx, cy, dist, _ in records:
+        if area < min_area:
+            continue
+        in_window = (cx >= x0 and cx <= x1 and cy >= y0 and cy <= y1)
+        corner = (x < 0.12 * w and y < 0.12 * h) or (x + bw > 0.88 * w and y < 0.12 * h) or (x < 0.12 * w and y + bh > 0.88 * h) or (x + bw > 0.88 * w and y + bh > 0.88 * h)
+        if corner and area < int(a_area * 0.25):
+            continue
+        if in_window or area >= int(a_area * 0.22):
+            keep[labels == i] = 255
+
+    if np.count_nonzero(keep > 0) < int(0.20 * a_area):
+        return mask
+    return keep
 
 
 def _keep_main_text_components(mask: np.ndarray) -> np.ndarray:
@@ -894,13 +1047,17 @@ def _lab_hsv_separation_mask(img_rgb: np.ndarray) -> np.ndarray:
     v = hsv[:, :, 2]
 
     dark = (l < np.percentile(l, 46)).astype(np.uint8) * 255
-    colorful = ((s > 32) & (v > 32)).astype(np.uint8) * 255
+    colorful = ((s > 30) & (v > 28)).astype(np.uint8) * 255
     chroma = (np.abs(a.astype(np.int16) - 128) + np.abs(b.astype(np.int16) - 128) > 20).astype(np.uint8) * 255
+    white_outline = ((s < 36) & (v > 172)).astype(np.uint8) * 255
 
     mask = cv2.bitwise_or(dark, colorful)
     mask = cv2.bitwise_or(mask, chroma)
+    near_colored = cv2.dilate(colorful, np.ones((5, 5), np.uint8), iterations=1)
+    white_outline = cv2.bitwise_and(white_outline, near_colored)
+    mask = cv2.bitwise_or(mask, white_outline)
 
-    pale = ((s < 24) & (v > 180)).astype(np.uint8) * 255
+    pale = ((s < 20) & (v > 186)).astype(np.uint8) * 255
     mask = cv2.bitwise_and(mask, cv2.bitwise_not(pale))
 
     k = np.ones((2, 2), np.uint8)
@@ -1035,7 +1192,8 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
     out_dir = Path(output_root) / font_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    source_img = Image.open(src).convert("RGBA")
+    source_img_raw = Image.open(src).convert("RGBA")
+    source_img, work_crop = _crop_working_zone_rgba(source_img_raw)
     rgb = np.array(source_img.convert("RGB"))
     source_profile = _analyze_source_profile(rgb)
     simple_bg = bool(source_profile["simple_bg"])
@@ -1098,6 +1256,7 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         canvas_rgba_local, canvas_mask_local, bbox_px_local, bbox_norm_local = _fit_rgba_to_standard_canvas(rgba_local)
         # Final guard on standardized canvas: cut detached lower decorative blobs.
         canvas_mask_local = _drop_lower_decorative_components(canvas_mask_local)
+        canvas_mask_local = _keep_central_large_components(canvas_mask_local)
         canvas_alpha_local = _soft_alpha_from_binary_mask(canvas_mask_local)
         canvas_rgba_local[:, :, 3] = canvas_alpha_local
         canvas_rgba_local = _decontaminate_edge_rgb(canvas_rgba_local, canvas_mask_local)
@@ -1171,6 +1330,7 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
     report_payload = {
         "font_id": font_id,
         "source_path": str(src),
+        "working_crop": work_crop,
         "extraction_mode": extraction_mode,
         "overlay_path": str(overlay_path),
         "mask_path": str(mask_path),
