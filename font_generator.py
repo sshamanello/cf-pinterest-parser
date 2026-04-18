@@ -273,12 +273,12 @@ def generate_font_asset(
     mode: str = "signature_lock",
 ) -> FontGenerationResult:
     """
-    Step-1 generator:
+    Script-only generator:
       - signature_lock: preserve extracted glyph shape and apply readability effects.
-      - full_regen / hybrid: currently fallback to signature_lock scaffolding.
     """
+    requested_mode = mode
     if mode not in GEN_MODES:
-        raise ValueError(f"Unsupported mode '{mode}'. Allowed: {sorted(GEN_MODES)}")
+        mode = "signature_lock"
 
     src = Path(source_preview_path)
     if not src.exists():
@@ -288,78 +288,16 @@ def generate_font_asset(
     out_dir = Path(output_root) / font_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    source_extraction = extract_overlay(src, output_root=output_root)
-    source_overlay = Path(source_extraction.overlay_path)
+    extraction = extract_overlay(src, output_root=output_root)
+    source_overlay = Path(extraction.overlay_path)
     generated_wordmark = out_dir / "generated_wordmark.png"
 
-    used_fallback = False
-    fallback_reason = ""
-    effective_mode = mode
+    used_fallback = requested_mode != "signature_lock"
+    fallback_reason = "ai_regen_disabled_script_only" if used_fallback else ""
+    effective_mode = "signature_lock"
     similarity_score = 0.0
 
-    # Stable signature-lock path.
-    if mode == "signature_lock":
-        shutil.copy2(source_overlay, generated_wordmark)
-    else:
-        full_regen_ok = False
-        regen_overlay_path = None
-        regen_reason = ""
-
-        if not _comfy_available():
-            regen_reason = "comfy_unavailable"
-        else:
-            try:
-                graph = _load_workflow_graph(COMFY_WORKFLOW_PATH)
-                prompt_graph = _parse_workflow_template(
-                    graph,
-                    positive_prompt=_build_positive_prompt(font_name=font_name, category=category),
-                    negative_prompt=_build_negative_prompt(),
-                )
-                prompt_id = _queue_prompt(prompt_graph)
-                outputs = _wait_for_output(prompt_id, timeout_sec=COMFY_TIMEOUT_SEC)
-                if not outputs:
-                    regen_reason = "comfy_timeout"
-                else:
-                    raw_img_path = out_dir / "full_regen_raw.png"
-                    if not _download_first_output_image(outputs, raw_img_path):
-                        regen_reason = "comfy_download_failed"
-                    else:
-                        regen_extraction = extract_overlay(raw_img_path, output_root=output_root)
-                        regen_overlay_path = Path(regen_extraction.overlay_path)
-                        regen_ok, similarity_score, regen_reason = _validate_regen_similarity(
-                            source_extraction=source_extraction,
-                            regen_extraction=regen_extraction,
-                            source_overlay=source_overlay,
-                            regen_overlay=regen_overlay_path,
-                        )
-                        if regen_extraction.needs_manual_check:
-                            regen_reason = f"regen_overlay_low_quality:{regen_extraction.manual_reason or 'manual_check'}"
-                        elif not regen_ok:
-                            pass
-                        else:
-                            full_regen_ok = True
-            except Exception as exc:
-                regen_reason = f"full_regen_exception:{exc}"
-
-        if mode == "full_regen":
-            if full_regen_ok and regen_overlay_path is not None:
-                shutil.copy2(regen_overlay_path, generated_wordmark)
-                effective_mode = "full_regen"
-            else:
-                shutil.copy2(source_overlay, generated_wordmark)
-                effective_mode = "signature_lock"
-                used_fallback = True
-                fallback_reason = regen_reason or "full_regen_failed"
-
-        elif mode == "hybrid":
-            if full_regen_ok and regen_overlay_path is not None:
-                shutil.copy2(regen_overlay_path, generated_wordmark)
-                effective_mode = "full_regen"
-            else:
-                shutil.copy2(source_overlay, generated_wordmark)
-                effective_mode = "signature_lock"
-                used_fallback = True
-                fallback_reason = regen_reason or "hybrid_full_regen_failed"
+    shutil.copy2(source_overlay, generated_wordmark)
 
     _apply_readability_effects(generated_wordmark)
 
@@ -367,7 +305,7 @@ def generate_font_asset(
         "font_id": font_id,
         "font_name": font_name,
         "category": category,
-        "requested_mode": mode,
+        "requested_mode": requested_mode,
         "effective_mode": effective_mode,
         "used_fallback": used_fallback,
         "fallback_reason": fallback_reason,

@@ -12,6 +12,25 @@
 
 ## Изменения 2026-04-15
 
+- Возврат к script-only подходу для генерации шрифта:
+  - в `font_generator.py` режимы `full_regen/hybrid` больше не запускают AI regeneration,
+  - любые запросы этих режимов автоматически приводятся к `signature_lock`,
+  - в `font_generation_report.json` это явно фиксируется:
+    - `effective_mode=signature_lock`,
+    - `used_fallback=true`,
+    - `fallback_reason=ai_regen_disabled_script_only`.
+- Улучшена финальная постобработка маски в `extractor.py`:
+  - добавлен этап `_finalize_text_mask`:
+    - удаление мусора по границам,
+    - восстановление тонких штрихов через edge-recovery рядом с найденной маской,
+    - морфологическая стабилизация и удаление мелких артефактов.
+  - улучшен soft-alpha (`_soft_alpha_from_binary_mask`):
+    - внутри букв альфа теперь 255 (чётче глиф),
+    - антиалиас вынесен в внешний edge-band для менее “пиксельного” контура.
+- Smoke-test после изменений:
+  - `python3 run.py extract --input ./test/extractor/input --output ./test/extractor/output`
+  - итог: `Processed=11 | PASS=9 | MANUAL_CHECK=2` (сложные кейсы остаются в ручной контроль).
+
 - Ужесточён `full_regen/hybrid` в `font_generator.py` для борьбы с плохими генерациями (кейс: белая `H` на белом фоне):
   - добавлены структурные quality-gates между исходным и regen-оверлеем:
     - минимум похожести `aHash` (`REGEN_MIN_SIMILARITY`, default `0.62`),

@@ -204,15 +204,41 @@ def _soft_alpha_from_binary_mask(mask: np.ndarray) -> np.ndarray:
     Convert a binary mask to soft alpha for cleaner, less pixelated edges.
     """
     binary = (mask > 0).astype(np.uint8)
-    soft = cv2.GaussianBlur((binary * 255).astype(np.float32), (0, 0), sigmaX=0.9, sigmaY=0.9)
+    soft = cv2.GaussianBlur((binary * 255).astype(np.float32), (0, 0), sigmaX=1.1, sigmaY=1.1)
     soft = np.clip(soft, 0, 255).astype(np.uint8)
 
     alpha = np.zeros_like(mask, dtype=np.uint8)
-    edge_band = cv2.dilate(binary, np.ones((3, 3), np.uint8), iterations=1) > 0
-    alpha[edge_band] = soft[edge_band]
-    alpha[binary > 0] = np.maximum(alpha[binary > 0], 245)
+    edge_outer = (cv2.dilate(binary, np.ones((3, 3), np.uint8), iterations=1) > 0) & (binary == 0)
+    alpha[edge_outer] = np.maximum(alpha[edge_outer], soft[edge_outer])
+    alpha[binary > 0] = 255
     alpha[alpha < 10] = 0
     return alpha
+
+
+def _finalize_text_mask(mask: np.ndarray, img_rgb: np.ndarray) -> np.ndarray:
+    """
+    Final cleanup pass:
+    - remove border noise,
+    - recover thin strokes near current mask edges,
+    - remove tiny artifacts.
+    """
+    h, w = mask.shape
+    _, mask = cv2.threshold(mask, 64, 255, cv2.THRESH_BINARY)
+    mask = _remove_border_touching_components(mask)
+
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(gray, 55, 160)
+    near = cv2.dilate((mask > 0).astype(np.uint8) * 255, np.ones((3, 3), np.uint8), iterations=1)
+    recovered = cv2.bitwise_and(edges, near)
+    mask = cv2.bitwise_or(mask, recovered)
+
+    kernel = np.ones((2, 2), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    min_area = max(12, int(0.00001 * h * w))
+    mask = _remove_small_components(mask, min_area=min_area)
+    return mask
 
 
 def _small_image_scale(h: int, w: int) -> float:
@@ -796,7 +822,8 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
     extraction_mode = best_name
 
     def render_and_qc(mask_in: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict, dict, dict, float, float, float, dict]:
-        alpha_soft_local = _soft_alpha_from_binary_mask(mask_in)
+        mask_refined_local = _finalize_text_mask(mask_in, rgb)
+        alpha_soft_local = _soft_alpha_from_binary_mask(mask_refined_local)
         rgba_local = np.array(source_img)
         rgba_local[:, :, 3] = alpha_soft_local
         canvas_rgba_local, canvas_mask_local, bbox_px_local, bbox_norm_local = _fit_rgba_to_standard_canvas(rgba_local)
