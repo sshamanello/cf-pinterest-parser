@@ -3,7 +3,10 @@ import csv
 import io
 import json
 import logging
+import os
+import subprocess
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,13 +14,23 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
-from rembg import remove
+from rembg import remove, new_session
 
 logger = logging.getLogger(__name__)
 
 SUPPORTED_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 STANDARD_OVERLAY_SIZE = 1500
 STANDARD_CONTENT_MAX_PX = 1200
+REMBG_MODEL_CANDIDATES = [
+    m.strip()
+    for m in os.environ.get(
+        "EXTRACTOR_REMBG_MODELS",
+        "",
+    ).split(",")
+    if m.strip()
+]
+REMBG_MODEL_TIMEOUT_SEC = int(os.environ.get("EXTRACTOR_REMBG_MODEL_TIMEOUT_SEC", "20"))
+REMBG_ALPHA_MATTING = os.environ.get("EXTRACTOR_REMBG_ALPHA_MATTING", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -135,21 +148,106 @@ def _enhance_gray(gray: np.ndarray) -> np.ndarray:
     return clahe.apply(gray)
 
 
-def _remove_background_with_rembg(image: Image.Image) -> Image.Image:
+def _remove_background_with_rembg(image: Image.Image, model_name: str = "") -> Image.Image:
     in_buf = io.BytesIO()
     image.save(in_buf, format="PNG")
+    payload = in_buf.getvalue()
     try:
-        output_bytes = remove(
-            in_buf.getvalue(),
-            alpha_matting=True,
-            alpha_matting_foreground_threshold=240,
-            alpha_matting_background_threshold=10,
-            alpha_matting_erode_size=8,
-        )
+        session = new_session(model_name) if model_name else None
     except Exception:
-        # Fallback to default remove if alpha matting backend is unavailable.
-        output_bytes = remove(in_buf.getvalue())
+        session = None
+    try:
+        if REMBG_ALPHA_MATTING:
+            output_bytes = remove(
+                payload,
+                session=session,
+                alpha_matting=True,
+                alpha_matting_foreground_threshold=240,
+                alpha_matting_background_threshold=10,
+                alpha_matting_erode_size=8,
+            )
+        else:
+            output_bytes = remove(payload, session=session)
+    except Exception:
+        output_bytes = remove(payload, session=session)
     return Image.open(io.BytesIO(output_bytes)).convert("RGBA")
+
+
+def _remove_background_with_timeout(image: Image.Image, model_name: str, timeout_sec: int) -> Image.Image | None:
+    # Isolate rembg call in subprocess to prevent hard hangs in main process.
+    with tempfile.TemporaryDirectory(prefix="rembg_tmp_") as td:
+        in_path = Path(td) / "in.png"
+        out_path = Path(td) / "out.png"
+        image.save(in_path, format="PNG")
+        py = (
+            "import io\n"
+            "from pathlib import Path\n"
+            "from PIL import Image\n"
+            "from rembg import remove,new_session\n"
+            f"inp=Path(r'''{str(in_path)}''')\n"
+            f"out=Path(r'''{str(out_path)}''')\n"
+            f"model=r'''{model_name}'''\n"
+            "session=new_session(model) if model else None\n"
+            "payload=inp.read_bytes()\n"
+            f"alpha_matting={str(REMBG_ALPHA_MATTING)}\n"
+            "try:\n"
+            "  if alpha_matting:\n"
+            "    res=remove(payload,session=session,alpha_matting=True,alpha_matting_foreground_threshold=240,alpha_matting_background_threshold=10,alpha_matting_erode_size=8)\n"
+            "  else:\n"
+            "    res=remove(payload,session=session)\n"
+            "except Exception:\n"
+            "  res=remove(payload,session=session)\n"
+            "out.write_bytes(res)\n"
+        )
+        try:
+            proc = subprocess.run(
+                ["python3", "-c", py],
+                check=True,
+                timeout=max(1, int(timeout_sec)),
+                capture_output=True,
+                text=True,
+            )
+            if not out_path.exists():
+                if proc.stderr:
+                    logger.warning("rembg subprocess no output (%s): %s", model_name or "default", proc.stderr[-300:])
+                return None
+            return Image.open(out_path).convert("RGBA")
+        except Exception as exc:
+            logger.warning("rembg subprocess failed (%s): %s", model_name or "default", exc)
+            return None
+
+
+def _collect_rembg_masks(source_img: Image.Image, simple_bg: bool) -> list[tuple[str, np.ndarray]]:
+    """
+    Try multiple rembg models and return processed masks.
+    This gives a free local quality boost similar to commercial ensembles.
+    """
+    out: list[tuple[str, np.ndarray]] = []
+    tried = set()
+    if not REMBG_MODEL_CANDIDATES:
+        return out
+
+    models = list(REMBG_MODEL_CANDIDATES)
+    for model in models:
+        model_key = model or "default"
+        if model_key in tried:
+            continue
+        tried.add(model_key)
+        try:
+            rgba = _remove_background_with_timeout(
+                source_img,
+                model_name=model,
+                timeout_sec=REMBG_MODEL_TIMEOUT_SEC,
+            )
+            if rgba is None:
+                logger.debug("rembg model timeout/empty: %s", model_key)
+                continue
+            alpha = np.array(rgba)[:, :, 3]
+            mask = _postprocess_alpha(alpha, simple_bg=simple_bg)
+            out.append((f"rembg_{model_key}", mask))
+        except Exception as exc:
+            logger.debug("rembg model failed: %s (%s)", model_key, exc)
+    return out
 
 
 def _postprocess_alpha(alpha: np.ndarray, simple_bg: bool) -> np.ndarray:
@@ -345,11 +443,17 @@ def _finalize_text_mask(mask: np.ndarray, img_rgb: np.ndarray) -> np.ndarray:
     h, w = mask.shape
     _, mask = cv2.threshold(mask, 64, 255, cv2.THRESH_BINARY)
     mask = _remove_border_touching_components(mask)
+    mask = _suppress_dense_background_blobs(mask, img_rgb)
 
     gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
     edges = cv2.Canny(gray, 55, 160)
+    hsv = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)
+    s = hsv[:, :, 1]
+    v = hsv[:, :, 2]
+    text_like = ((v < 165) | (s > 34)).astype(np.uint8) * 255
     near = cv2.dilate((mask > 0).astype(np.uint8) * 255, np.ones((3, 3), np.uint8), iterations=1)
     recovered = cv2.bitwise_and(edges, near)
+    recovered = cv2.bitwise_and(recovered, text_like)
     mask = cv2.bitwise_or(mask, recovered)
 
     kernel = np.ones((2, 2), np.uint8)
@@ -358,9 +462,71 @@ def _finalize_text_mask(mask: np.ndarray, img_rgb: np.ndarray) -> np.ndarray:
 
     min_area = max(12, int(0.00001 * h * w))
     mask = _remove_small_components(mask, min_area=min_area)
+    mask = _remove_frame_like_components(mask)
     mask = _keep_central_large_components(mask)
     mask = _drop_lower_decorative_components(mask)
     return mask
+
+
+def _suppress_dense_background_blobs(mask: np.ndarray, img_rgb: np.ndarray) -> np.ndarray:
+    """
+    Remove large smooth background blobs that get merged with text while
+    keeping thick glyph interiors close to high-gradient edges.
+    """
+    if np.count_nonzero(mask > 0) == 0:
+        return mask
+
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    grad_x = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    grad_y = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    grad = cv2.magnitude(grad_x, grad_y)
+
+    fg = mask > 0
+    grad_fg = grad[fg]
+    if grad_fg.size == 0:
+        return mask
+
+    thr = float(max(14.0, np.percentile(grad_fg, 56)))
+    seed = ((grad >= thr) & fg).astype(np.uint8)
+    if np.count_nonzero(seed > 0) < 10:
+        return mask
+
+    inv_seed = (seed == 0).astype(np.uint8)
+    dist = cv2.distanceTransform(inv_seed, cv2.DIST_L2, 3)
+    max_dist = max(4.0, min(mask.shape) * 0.012)
+    keep = fg & ((seed > 0) | (dist <= max_dist))
+    keep_u8 = keep.astype(np.uint8) * 255
+    keep_u8 = cv2.morphologyEx(keep_u8, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8), iterations=1)
+    return keep_u8
+
+
+def _remove_frame_like_components(mask: np.ndarray) -> np.ndarray:
+    """
+    Drop thin frame/bracket artifacts near canvas edges.
+    """
+    h, w = mask.shape
+    n, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    if n <= 1:
+        return mask
+
+    out = np.zeros_like(mask, dtype=np.uint8)
+    for i in range(1, n):
+        x = int(stats[i, cv2.CC_STAT_LEFT])
+        y = int(stats[i, cv2.CC_STAT_TOP])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area <= 0 or bw <= 0 or bh <= 0:
+            continue
+
+        touch_side = (x <= int(0.10 * w)) or (x + bw >= int(0.90 * w))
+        touch_top_bottom = (y <= int(0.10 * h)) or (y + bh >= int(0.90 * h))
+        is_thin_vertical = bw <= int(0.12 * w) and bh >= int(0.24 * h)
+        is_thin_horizontal = bh <= int(0.12 * h) and bw >= int(0.24 * w)
+        if ((touch_side and is_thin_vertical) or (touch_top_bottom and is_thin_horizontal)) and area < int(0.28 * h * w):
+            continue
+        out[labels == i] = 255
+    return out
 
 
 def _drop_lower_decorative_components(mask: np.ndarray) -> np.ndarray:
@@ -609,6 +775,8 @@ def _keep_primary_wordmark_components(mask: np.ndarray) -> np.ndarray:
     band_y0 = max(0, int(ay - 0.10 * h))
     band_y1 = min(h, int(ay + ah + 0.08 * h))
     cy_limit = min(float(band_y1), float(a_cy + 0.12 * h))
+    band_x0 = max(0, int(ax - 0.18 * w))
+    band_x1 = min(w, int(ax + aw + 0.18 * w))
     min_area = max(18, int(a_area * 0.01), int(0.000015 * h * w))
 
     keep = np.zeros_like(mask, dtype=np.uint8)
@@ -617,9 +785,16 @@ def _keep_primary_wordmark_components(mask: np.ndarray) -> np.ndarray:
             continue
         y0 = y
         y1 = y + bh
+        cx = x + bw / 2.0
         overlaps_band = not (y1 < band_y0 or y0 > band_y1)
-        if overlaps_band and cy <= cy_limit:
-            keep[labels == i] = 255
+        if not overlaps_band or cy > cy_limit:
+            continue
+        if cx < band_x0 or cx > band_x1:
+            if area < int(a_area * 0.24):
+                continue
+        if bh >= int(0.42 * h) and bw <= int(0.08 * w) and area < int(a_area * 0.40):
+            continue
+        keep[labels == i] = 255
 
     # Safety fallback: if filtering was too aggressive, return original main-components logic.
     if np.count_nonzero(keep > 0) < max(50, int(0.18 * a_area)):
@@ -772,6 +947,10 @@ def _score_mask(mask: np.ndarray, img_rgb: np.ndarray | None = None, source_prof
         area_ratio = area / float(mask.size)
         if area_ratio > 0.04 and fill > 0.82:
             rect_penalty = 0.35
+        elif area_ratio > 0.09 and fill > 0.68:
+            rect_penalty = 0.24
+        elif area_ratio > 0.16 and fill > 0.52:
+            rect_penalty = 0.20
 
     structure_bonus = 0.0
     if img_rgb is not None:
@@ -1107,6 +1286,33 @@ def _strict_letter_mask(img_rgb: np.ndarray, simple_bg: bool) -> np.ndarray:
     return chosen
 
 
+def _dark_script_mask(img_rgb: np.ndarray) -> np.ndarray:
+    """
+    Candidate for dark script text on light card backgrounds with light stroke.
+    """
+    hsv = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)
+    s = hsv[:, :, 1]
+    v = hsv[:, :, 2]
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+
+    p35 = int(np.percentile(gray, 35))
+    dark = (gray < min(132, p35 + 16)).astype(np.uint8) * 255
+    white = ((s < 34) & (v > 152)).astype(np.uint8) * 255
+    near_dark = cv2.dilate(dark, np.ones((5, 5), np.uint8), iterations=1)
+    outline = cv2.bitwise_and(white, near_dark)
+
+    mask = cv2.bitwise_or(dark, outline)
+    edges = cv2.Canny(gray, 65, 165)
+    edges = cv2.bitwise_and(edges, cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=1))
+    mask = cv2.bitwise_or(mask, edges)
+
+    mask = _remove_border_touching_components(mask)
+    mask = _remove_small_components(mask, min_area=max(14, int(0.000012 * img_rgb.shape[0] * img_rgb.shape[1])))
+    mask = _remove_frame_like_components(mask)
+    mask = _keep_main_text_components(mask)
+    return mask
+
+
 def _compute_quality(mask: np.ndarray) -> tuple[float, float, float]:
     total = float(mask.size)
     foreground_ratio = float(np.count_nonzero(mask > 0) / total)
@@ -1198,35 +1404,21 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
     source_profile = _analyze_source_profile(rgb)
     simple_bg = bool(source_profile["simple_bg"])
     extraction_mode = "plain_mode"
-    candidate_masks: list[tuple[str, np.ndarray]] = []
+    fast_candidate_masks: list[tuple[str, np.ndarray]] = []
 
     # CV-first candidates
     card_mask = _build_card_mode_mask(rgb)
     if card_mask is not None:
         extraction_mode = "card_mode"
-        candidate_masks.append(("card_mode", card_mask))
-    candidate_masks.append(("plain_mode", _extract_text_mask_general(rgb, profile="default")))
-    candidate_masks.append(("threshold_otsu", _threshold_text_mask(rgb)))
-    candidate_masks.append(("adaptive_threshold", _adaptive_threshold_mask(rgb)))
-    candidate_masks.append(("lab_hsv_separation", _lab_hsv_separation_mask(rgb)))
+        fast_candidate_masks.append(("card_mode", card_mask))
+    fast_candidate_masks.append(("plain_mode", _extract_text_mask_general(rgb, profile="default")))
+    fast_candidate_masks.append(("dark_script", _dark_script_mask(rgb)))
+    fast_candidate_masks.append(("threshold_otsu", _threshold_text_mask(rgb)))
+    fast_candidate_masks.append(("adaptive_threshold", _adaptive_threshold_mask(rgb)))
+    fast_candidate_masks.append(("lab_hsv_separation", _lab_hsv_separation_mask(rgb)))
     if simple_bg:
-        candidate_masks.append(("color_key", _border_distance_mask(rgb, simple_bg=True)))
-
-    rembg_mask = None
-    try:
-        rgba = _remove_background_with_rembg(source_img)
-        rembg_alpha = np.array(rgba)[:, :, 3]
-        rembg_mask = _postprocess_alpha(rembg_alpha, simple_bg=simple_bg)
-        if _looks_like_full_rectangle(rembg_mask):
-            roi_mask = _letter_mask_from_rect_component(rgb, rembg_mask)
-            if roi_mask is not None and _foreground_ratio(roi_mask) > 0.003:
-                candidate_masks.append(("rembg_rect_refined", roi_mask))
-            candidate_masks.append(("rembg_strict", _strict_letter_mask(rgb, simple_bg=simple_bg)))
-        else:
-            candidate_masks.append(("rembg", rembg_mask))
-    except Exception as exc:
-        logger.warning("[%s] rembg unavailable/failed (%s). Using strict CV mask only.", font_id, exc)
-        candidate_masks.append(("strict_fallback", _strict_letter_mask(rgb, simple_bg=simple_bg)))
+        fast_candidate_masks.append(("color_key", _border_distance_mask(rgb, simple_bg=True)))
+    fast_candidate_masks.append(("strict_fallback", _strict_letter_mask(rgb, simple_bg=simple_bg)))
 
     def choose_best(cands: list[tuple[str, np.ndarray]]) -> tuple[str, np.ndarray]:
         best_name_local = "plain_mode"
@@ -1244,7 +1436,7 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         return best_name_local, _keep_main_text_components(primary)
 
     retry_count = 0
-    best_name, mask = choose_best(candidate_masks)
+    best_name, mask = choose_best(fast_candidate_masks)
     extraction_mode = best_name
 
     def render_and_qc(mask_in: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict, dict, dict, float, float, float, dict]:
@@ -1257,6 +1449,8 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         # Final guard on standardized canvas: cut detached lower decorative blobs.
         canvas_mask_local = _drop_lower_decorative_components(canvas_mask_local)
         canvas_mask_local = _keep_central_large_components(canvas_mask_local)
+        canvas_mask_local = _remove_frame_like_components(canvas_mask_local)
+        canvas_mask_local = _remove_border_touching_components(canvas_mask_local)
         canvas_alpha_local = _soft_alpha_from_binary_mask(canvas_mask_local)
         canvas_rgba_local[:, :, 3] = canvas_alpha_local
         canvas_rgba_local = _decontaminate_edge_rgb(canvas_rgba_local, canvas_mask_local)
@@ -1288,10 +1482,25 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
 
     qc_decision, qc_reason = _qc_decision(quality, fg_ratio, qc_metrics)
 
-    # Retry policy: expand candidate set only for borderline outputs.
-    if qc_decision == "RETRY":
+    # Retry policy:
+    # - RETRY: borderline quality
+    # - MANUAL_CHECK: run heavy rembg ensemble before giving up
+    if qc_decision in {"RETRY", "MANUAL_CHECK"}:
         retry_count = 1
-        retry_candidates = list(candidate_masks)
+        retry_candidates = list(fast_candidate_masks)
+        rembg_candidates = _collect_rembg_masks(source_img, simple_bg=simple_bg)
+        if rembg_candidates:
+            for model_name, rembg_mask in rembg_candidates:
+                if _looks_like_full_rectangle(rembg_mask):
+                    roi_mask = _letter_mask_from_rect_component(rgb, rembg_mask)
+                    if roi_mask is not None and _foreground_ratio(roi_mask) > 0.003:
+                        retry_candidates.append((f"{model_name}_rect_refined", roi_mask))
+                    retry_candidates.append((f"{model_name}_strict", _strict_letter_mask(rgb, simple_bg=simple_bg)))
+                else:
+                    retry_candidates.append((model_name, rembg_mask))
+        elif REMBG_MODEL_CANDIDATES:
+            logger.warning("[%s] all rembg models unavailable. Keeping CV-only retry.", font_id)
+
         retry_candidates.append(("plain_mode_aggressive", _extract_text_mask_general(rgb, profile="aggressive")))
         retry_candidates.append(("plain_mode_conservative", _extract_text_mask_general(rgb, profile="conservative")))
         retry_candidates.append(("strict_retry", _strict_letter_mask(rgb, simple_bg=simple_bg)))
@@ -1309,10 +1518,17 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
             font_colors,
         ) = render_and_qc(mask)
         qc_decision, qc_reason = _qc_decision(quality, fg_ratio, qc_metrics)
-        # Accept borderline outputs after one retry to keep throughput high on large batches.
+        # Accept borderline outputs after one retry only when artifact signals are low.
         if qc_decision == "RETRY":
-            qc_decision = "PASS"
-            qc_reason = "accepted_after_retry"
+            noise = float(qc_metrics.get("noise_score", 1.0))
+            stroke = float(qc_metrics.get("stroke_loss_score", 1.0))
+            edge_art = float(qc_metrics.get("edge_artifact_score", 1.0))
+            if stroke <= 0.74 and noise <= 0.70 and edge_art <= 0.25:
+                qc_decision = "PASS"
+                qc_reason = "accepted_after_retry"
+            else:
+                qc_decision = "MANUAL_CHECK"
+                qc_reason = "retry_quality_still_low"
 
     overlay = Image.fromarray(canvas_rgba, mode="RGBA")
     mask_image = Image.fromarray(canvas_mask, mode="L")
