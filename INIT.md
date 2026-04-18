@@ -14,6 +14,35 @@
 
 ## Изменения 2026-04-18
 
+- Добавлен новый production-модуль публикации: `font_publish_pipeline.py`.
+  - Цель: готовить publish-ready изображения по циклу:
+    1. script extraction (сохранение формы/цвета шрифта),
+    2. генерация уникального фона через ComfyUI (если доступен),
+    3. fallback на процедурный фон, если ComfyUI недоступен/отключён,
+    4. финальный композит `overlay + background` без деформации букв,
+    5. отчёты для контроля качества.
+  - Ключевой принцип сохранения уникальности шрифта:
+    - буквы НЕ регенерируются через AI,
+    - используется extracted overlay как source-of-truth (оригинальная форма и цвет).
+  - В pipeline добавлены:
+    - prompt для ComfyUI с запретом текста/логотипов на фоне,
+    - auto-readability слой (если контраст текста к фону низкий),
+    - batch-отчёты: `publish_batch_report.json/.csv`.
+- В `run.py` добавлена CLI-команда:
+  - `publish-fonts` — полный publish-cycle по файлу или папке.
+  - Пример:
+    - `python run.py publish-fonts --input ./test/extractor/input --output ./test/extractor/output --category fonts`
+  - Полезные флаги:
+    - `--no-comfy` (чисто скриптовые фоны),
+    - `--target-width` (масштаб wordmark на финальном холсте).
+- Smoke-test новой команды:
+  - `python run.py publish-fonts --input ./test/extractor/input/magic-unicorn.jpg --output ./test/extractor/output --category fonts --no-comfy`
+  - Результат:
+    - `publish_background.png`,
+    - `publish_final.png`,
+    - `publish_report.json`,
+    - `extract_qc=PASS`, читаемость (`readability_contrast_score`) сохранена.
+
 - Реализован узкий production-цикл для качества выреза (без ComfyUI):
   1. `crop` до рабочей зоны (`_crop_working_zone_rgba`) — удаляем внешние чёрные поля.
   2. Грубая маска букв (мульти-кандидаты) + LAB/HSV с отдельным захватом белой обводки рядом с цветными буквами.

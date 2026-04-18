@@ -23,6 +23,7 @@ from config import CATEGORIES
 from comfy_processor import process_products, create_pin
 from extractor import run_batch
 from font_generator import generate_font_asset, GEN_MODES
+from font_publish_pipeline import run_publish_batch
 from parser import parse_category
 from sheets import append_products, ensure_tabs, get_sheet_client, test_connection
 
@@ -175,6 +176,45 @@ def cmd_generate_font(
     )
 
 
+def cmd_publish_fonts(
+    input_path: str,
+    output_root: str,
+    category: str,
+    font_name: str,
+    use_comfy_background: bool,
+    target_width_pct: float,
+):
+    """Build publish-ready assets: extract overlay -> generate bg -> compose final image."""
+    logger.info("Mode: publish fonts")
+    logger.info("Input: %s", input_path)
+    logger.info("Output root: %s", output_root)
+    logger.info("Category: %s", category)
+    logger.info("Comfy backgrounds: %s", use_comfy_background)
+
+    results = run_publish_batch(
+        input_path=input_path,
+        output_root=output_root,
+        category=category,
+        font_name=font_name,
+        use_comfy_background=use_comfy_background,
+        target_width_pct=target_width_pct,
+    )
+    if not results:
+        logger.warning("[!] No images published")
+        return
+
+    comfy_count = sum(1 for r in results if r.comfy_used)
+    fallback_count = sum(1 for r in results if r.used_fallback)
+    pass_extract = sum(1 for r in results if r.extraction_qc == "PASS")
+    logger.info(
+        "[OK] Published: %d | comfy: %d | fallback: %d | extract_pass: %d",
+        len(results),
+        comfy_count,
+        fallback_count,
+        pass_extract,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="CF Pinterest Parser - quick launcher",
@@ -186,6 +226,7 @@ Commands:
   test     Test: one category, one page
   extract  Remove background and save transparent overlays
   generate-font  Generate font wordmark asset (signature-lock/full-regen scaffold)
+  publish-fonts  Build publish-ready images (overlay + unique background)
 
 Examples:
   python run.py parse                          # all, 3 pages
@@ -193,6 +234,7 @@ Examples:
   python run.py test                            # test
   python run.py extract --input ./previews      # extraction only
   python run.py generate-font --input ./preview.jpg --font-name \"Amore\" --category wedding
+  python run.py publish-fonts --input ./test/extractor/input --output ./output --category fonts
         """,
     )
 
@@ -237,6 +279,40 @@ Examples:
         choices=sorted(GEN_MODES),
         help="Generation mode (default: signature_lock)",
     )
+    p_pub = subparsers.add_parser("publish-fonts", help="Build publish-ready images")
+    p_pub.add_argument(
+        "--input",
+        "-i",
+        required=True,
+        help="File or folder with source preview images",
+    )
+    p_pub.add_argument(
+        "--output",
+        "-o",
+        default="output",
+        help="Output root folder (default: output)",
+    )
+    p_pub.add_argument(
+        "--category",
+        default="fonts",
+        help="Niche/category label for background prompts (default: fonts)",
+    )
+    p_pub.add_argument(
+        "--font-name",
+        default="",
+        help="Optional display name (single file mode). In folder mode file names are used.",
+    )
+    p_pub.add_argument(
+        "--no-comfy",
+        action="store_true",
+        help="Disable ComfyUI and use script backgrounds only",
+    )
+    p_pub.add_argument(
+        "--target-width",
+        type=float,
+        default=0.72,
+        help="Target width ratio for wordmark on canvas, 0.45..0.88 (default: 0.72)",
+    )
 
     args = parser.parse_args()
 
@@ -255,6 +331,15 @@ Examples:
             font_name=args.font_name,
             category=args.category,
             mode=args.mode,
+        )
+    elif args.command == "publish-fonts":
+        cmd_publish_fonts(
+            input_path=args.input,
+            output_root=args.output,
+            category=args.category,
+            font_name=args.font_name,
+            use_comfy_background=not args.no_comfy,
+            target_width_pct=args.target_width,
         )
     else:
         parser.print_help()
