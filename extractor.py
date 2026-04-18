@@ -238,7 +238,63 @@ def _finalize_text_mask(mask: np.ndarray, img_rgb: np.ndarray) -> np.ndarray:
 
     min_area = max(12, int(0.00001 * h * w))
     mask = _remove_small_components(mask, min_area=min_area)
+    mask = _drop_lower_decorative_components(mask)
     return mask
+
+
+def _drop_lower_decorative_components(mask: np.ndarray) -> np.ndarray:
+    """
+    Remove detached lower decorative blocks (flowers/subtitles) while keeping
+    the main wordmark and nearby accents.
+    """
+    h, w = mask.shape
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    if n <= 1:
+        return mask
+
+    recs = []
+    for i in range(1, n):
+        x = int(stats[i, cv2.CC_STAT_LEFT])
+        y = int(stats[i, cv2.CC_STAT_TOP])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area <= 0 or bw <= 0 or bh <= 0:
+            continue
+        cx, cy = centroids[i]
+        recs.append((i, x, y, bw, bh, area, float(cx), float(cy)))
+
+    if not recs:
+        return mask
+
+    upper = [r for r in recs if (r[7] / max(1.0, h)) <= 0.58]
+    anchor = max(upper, key=lambda r: r[5]) if upper else max(recs, key=lambda r: r[5])
+    _, ax, ay, aw, ah, a_area, _, a_cy = anchor
+    y_limit = min(float(h), float(a_cy + 0.13 * h), float(ay + ah + 0.09 * h))
+    min_area = max(16, int(a_area * 0.004))
+    large_lower_area = 0
+    large_lower_count = 0
+    for _, _, y, _, bh, area, _, cy in recs:
+        if cy <= y_limit:
+            continue
+        if area >= int(a_area * 0.12) and y >= int(ay + 0.45 * ah):
+            large_lower_area += area
+            large_lower_count += 1
+
+    # Activate removal only when we clearly see detached lower decorative mass.
+    if large_lower_count == 0 and large_lower_area < int(a_area * 0.22):
+        return mask
+
+    keep = np.zeros_like(mask, dtype=np.uint8)
+    for i, x, y, bw, bh, area, _, cy in recs:
+        if area < min_area:
+            continue
+        if cy <= y_limit:
+            keep[labels == i] = 255
+
+    if np.count_nonzero(keep > 0) < int(0.12 * a_area):
+        return mask
+    return keep
 
 
 def _small_image_scale(h: int, w: int) -> float:
@@ -297,6 +353,63 @@ def _keep_main_text_components(mask: np.ndarray) -> np.ndarray:
         acc += area
         if acc / total_area >= 0.985:
             break
+    return keep
+
+
+def _keep_primary_wordmark_components(mask: np.ndarray) -> np.ndarray:
+    """
+    Keep the primary wordmark line and drop lower decorative blocks/subtitles.
+    This targets common preview layouts where the main font name is the largest
+    text group in the upper-middle area.
+    """
+    h, w = mask.shape
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+    if n <= 1:
+        return mask
+
+    records = []
+    for i in range(1, n):
+        x = int(stats[i, cv2.CC_STAT_LEFT])
+        y = int(stats[i, cv2.CC_STAT_TOP])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area <= 0 or bw <= 0 or bh <= 0:
+            continue
+        cx, cy = centroids[i]
+        center_score = max(0.0, 1.0 - abs((cx - (w / 2.0)) / max(1.0, w / 2.0)))
+        upper_penalty = max(0.0, (cy / max(1.0, h)) - 0.52)
+        upper_score = max(0.0, 1.0 - upper_penalty * 2.4)
+        span_score = max(0.2, min(1.0, bw / max(1.0, w * 0.45)))
+        aspect = bw / max(1.0, bh)
+        aspect_score = max(0.3, min(1.35, aspect / 1.25))
+        score = float(area) * (0.45 + 0.55 * center_score) * (0.55 + 0.45 * upper_score) * span_score * aspect_score
+        records.append((i, x, y, bw, bh, area, score, cy))
+
+    if not records:
+        return mask
+
+    upper_records = [r for r in records if (r[7] / max(1.0, h)) <= 0.58]
+    anchor = max(upper_records, key=lambda r: r[6]) if upper_records else max(records, key=lambda r: r[6])
+    _, ax, ay, aw, ah, a_area, _, a_cy = anchor
+    band_y0 = max(0, int(ay - 0.10 * h))
+    band_y1 = min(h, int(ay + ah + 0.08 * h))
+    cy_limit = min(float(band_y1), float(a_cy + 0.12 * h))
+    min_area = max(18, int(a_area * 0.01), int(0.000015 * h * w))
+
+    keep = np.zeros_like(mask, dtype=np.uint8)
+    for i, x, y, bw, bh, area, _, cy in records:
+        if area < min_area:
+            continue
+        y0 = y
+        y1 = y + bh
+        overlaps_band = not (y1 < band_y0 or y0 > band_y1)
+        if overlaps_band and cy <= cy_limit:
+            keep[labels == i] = 255
+
+    # Safety fallback: if filtering was too aggressive, return original main-components logic.
+    if np.count_nonzero(keep > 0) < max(50, int(0.18 * a_area)):
+        return _keep_main_text_components(mask)
     return keep
 
 
@@ -815,7 +928,8 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
                 best_score_local = score
                 best_mask_local = cmask
                 best_name_local = name
-        return best_name_local, _keep_main_text_components(best_mask_local)
+        primary = _keep_primary_wordmark_components(best_mask_local)
+        return best_name_local, _keep_main_text_components(primary)
 
     retry_count = 0
     best_name, mask = choose_best(candidate_masks)
@@ -827,6 +941,10 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         rgba_local = np.array(source_img)
         rgba_local[:, :, 3] = alpha_soft_local
         canvas_rgba_local, canvas_mask_local, bbox_px_local, bbox_norm_local = _fit_rgba_to_standard_canvas(rgba_local)
+        # Final guard on standardized canvas: cut detached lower decorative blobs.
+        canvas_mask_local = _drop_lower_decorative_components(canvas_mask_local)
+        canvas_alpha_local = _soft_alpha_from_binary_mask(canvas_mask_local)
+        canvas_rgba_local[:, :, 3] = canvas_alpha_local
         quality_local, fg_local, tr_local = _compute_quality(canvas_mask_local)
         qc_metrics_local = _compute_qc_metrics(canvas_mask_local, canvas_rgba_local[:, :, 3])
         return (
