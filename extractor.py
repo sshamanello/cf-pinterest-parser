@@ -64,6 +64,42 @@ def _estimate_simple_background(img_rgb: np.ndarray) -> bool:
     return dominant_ratio >= 0.80
 
 
+def _analyze_source_profile(img_rgb: np.ndarray) -> dict:
+    """
+    Quick source diagnostics for mode selection.
+    """
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    contrast = float(np.std(gray) / 255.0)
+    lap = cv2.Laplacian(gray, cv2.CV_64F)
+    texture = float(min(1.0, np.var(lap) / 1800.0))
+
+    h, w = gray.shape
+    border = max(4, min(h, w) // 40)
+    border_pixels = np.concatenate(
+        [
+            img_rgb[:border, :, :].reshape(-1, 3),
+            img_rgb[h - border :, :, :].reshape(-1, 3),
+            img_rgb[:, :border, :].reshape(-1, 3),
+            img_rgb[:, w - border :, :].reshape(-1, 3),
+        ],
+        axis=0,
+    ).astype(np.float32)
+    border_std = float(np.mean(np.std(border_pixels, axis=0)) / 255.0)
+    simple_bg = _estimate_simple_background(img_rgb)
+    return {
+        "simple_bg": simple_bg,
+        "contrast": round(contrast, 4),
+        "texture": round(texture, 4),
+        "border_texture": round(border_std, 4),
+        "high_contrast": contrast >= 0.20,
+    }
+
+
+def _enhance_gray(gray: np.ndarray) -> np.ndarray:
+    clahe = cv2.createCLAHE(clipLimit=2.6, tileGridSize=(8, 8))
+    return clahe.apply(gray)
+
+
 def _remove_background_with_rembg(image: Image.Image) -> Image.Image:
     in_buf = io.BytesIO()
     image.save(in_buf, format="PNG")
@@ -213,6 +249,31 @@ def _soft_alpha_from_binary_mask(mask: np.ndarray) -> np.ndarray:
     alpha[binary > 0] = 255
     alpha[alpha < 10] = 0
     return alpha
+
+
+def _decontaminate_edge_rgb(rgba: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """
+    Anti-halo: reduce old background color contamination on text edges.
+    """
+    out = rgba.copy()
+    binary = (mask > 0).astype(np.uint8)
+    if np.count_nonzero(binary) == 0:
+        return out
+
+    core = cv2.erode(binary, np.ones((3, 3), np.uint8), iterations=1)
+    if np.count_nonzero(core) == 0:
+        core = binary
+    edge_in = (binary > 0) & (core == 0)
+
+    interior_pixels = out[:, :, :3][core > 0]
+    if interior_pixels.size == 0:
+        return out
+    interior_mean = np.mean(interior_pixels.astype(np.float32), axis=0)
+
+    rgb = out[:, :, :3].astype(np.float32)
+    rgb[edge_in] = rgb[edge_in] * 0.72 + interior_mean * 0.28
+    out[:, :, :3] = np.clip(rgb, 0, 255).astype(np.uint8)
+    return out
 
 
 def _finalize_text_mask(mask: np.ndarray, img_rgb: np.ndarray) -> np.ndarray:
@@ -540,7 +601,7 @@ def _build_card_mode_mask(img_rgb: np.ndarray) -> np.ndarray | None:
     return full
 
 
-def _score_mask(mask: np.ndarray) -> float:
+def _score_mask(mask: np.ndarray, img_rgb: np.ndarray | None = None, source_profile: dict | None = None) -> float:
     fg = _foreground_ratio(mask)
     if fg <= 0.0:
         return 0.0
@@ -559,7 +620,34 @@ def _score_mask(mask: np.ndarray) -> float:
         if area_ratio > 0.04 and fill > 0.82:
             rect_penalty = 0.35
 
-    return max(0.0, fg_score - rect_penalty)
+    structure_bonus = 0.0
+    if img_rgb is not None:
+        n, _, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
+        comp_count = max(0, n - 1)
+        if comp_count > 0:
+            # Penalize both too fragmented and too monolithic masks.
+            if comp_count <= 2:
+                structure_bonus -= 0.08
+            elif comp_count > 120:
+                structure_bonus -= min(0.22, (comp_count - 120) / 700.0)
+            else:
+                structure_bonus += 0.04
+
+        edges = cv2.Canny(mask, 40, 120)
+        edge_density = float(np.count_nonzero(edges > 0) / max(1, np.count_nonzero(mask > 0)))
+        if 0.12 <= edge_density <= 0.42:
+            structure_bonus += 0.06
+        else:
+            structure_bonus -= 0.08
+
+    source_bias = 0.0
+    if source_profile:
+        if source_profile.get("high_contrast", False):
+            source_bias += 0.04
+        if float(source_profile.get("texture", 0.0)) > 0.55:
+            source_bias -= 0.03
+
+    return max(0.0, min(1.0, fg_score - rect_penalty + structure_bonus + source_bias))
 
 
 def _fit_rgba_to_standard_canvas(rgba: np.ndarray) -> tuple[np.ndarray, np.ndarray, dict, dict]:
@@ -761,6 +849,68 @@ def _otsu_text_mask(img_rgb: np.ndarray) -> np.ndarray:
     return inv if score(inv_ratio) >= score(direct_ratio) else direct
 
 
+def _threshold_text_mask(img_rgb: np.ndarray) -> np.ndarray:
+    """
+    Grayscale -> contrast enhancement -> Otsu threshold (dark text focus).
+    """
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    enhanced = _enhance_gray(gray)
+    blur = cv2.GaussianBlur(enhanced, (3, 3), 0)
+    _, inv = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    inv = _remove_border_touching_components(inv)
+    inv = _remove_small_components(inv, min_area=max(14, int(0.000012 * img_rgb.shape[0] * img_rgb.shape[1])))
+    return inv
+
+
+def _adaptive_threshold_mask(img_rgb: np.ndarray) -> np.ndarray:
+    gray = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+    enhanced = _enhance_gray(gray)
+    local = cv2.adaptiveThreshold(
+        enhanced,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        31,
+        6,
+    )
+    k = np.ones((2, 2), np.uint8)
+    local = cv2.morphologyEx(local, cv2.MORPH_OPEN, k, iterations=1)
+    local = cv2.morphologyEx(local, cv2.MORPH_CLOSE, k, iterations=1)
+    local = _remove_border_touching_components(local)
+    local = _remove_small_components(local, min_area=max(12, int(0.00001 * img_rgb.shape[0] * img_rgb.shape[1])))
+    return local
+
+
+def _lab_hsv_separation_mask(img_rgb: np.ndarray) -> np.ndarray:
+    """
+    Separate text by color/lightness in LAB + HSV spaces.
+    """
+    lab = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2LAB)
+    l = lab[:, :, 0]
+    a = lab[:, :, 1]
+    b = lab[:, :, 2]
+    hsv = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)
+    s = hsv[:, :, 1]
+    v = hsv[:, :, 2]
+
+    dark = (l < np.percentile(l, 46)).astype(np.uint8) * 255
+    colorful = ((s > 32) & (v > 32)).astype(np.uint8) * 255
+    chroma = (np.abs(a.astype(np.int16) - 128) + np.abs(b.astype(np.int16) - 128) > 20).astype(np.uint8) * 255
+
+    mask = cv2.bitwise_or(dark, colorful)
+    mask = cv2.bitwise_or(mask, chroma)
+
+    pale = ((s < 24) & (v > 180)).astype(np.uint8) * 255
+    mask = cv2.bitwise_and(mask, cv2.bitwise_not(pale))
+
+    k = np.ones((2, 2), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=1)
+    mask = _remove_border_touching_components(mask)
+    mask = _remove_small_components(mask, min_area=max(12, int(0.00001 * img_rgb.shape[0] * img_rgb.shape[1])))
+    return mask
+
+
 def _strict_letter_mask(img_rgb: np.ndarray, simple_bg: bool) -> np.ndarray:
     """
     Fallback for 'rectangle kept as foreground':
@@ -887,9 +1037,8 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
 
     source_img = Image.open(src).convert("RGBA")
     rgb = np.array(source_img.convert("RGB"))
-    simple_bg = _estimate_simple_background(rgb)
-
-    rgba_np = np.array(source_img)
+    source_profile = _analyze_source_profile(rgb)
+    simple_bg = bool(source_profile["simple_bg"])
     extraction_mode = "plain_mode"
     candidate_masks: list[tuple[str, np.ndarray]] = []
 
@@ -899,6 +1048,11 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         extraction_mode = "card_mode"
         candidate_masks.append(("card_mode", card_mask))
     candidate_masks.append(("plain_mode", _extract_text_mask_general(rgb, profile="default")))
+    candidate_masks.append(("threshold_otsu", _threshold_text_mask(rgb)))
+    candidate_masks.append(("adaptive_threshold", _adaptive_threshold_mask(rgb)))
+    candidate_masks.append(("lab_hsv_separation", _lab_hsv_separation_mask(rgb)))
+    if simple_bg:
+        candidate_masks.append(("color_key", _border_distance_mask(rgb, simple_bg=True)))
 
     rembg_mask = None
     try:
@@ -923,7 +1077,7 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         for name, cmask in cands:
             if cmask is None:
                 continue
-            score = _score_mask(cmask)
+            score = _score_mask(cmask, img_rgb=rgb, source_profile=source_profile)
             if score > best_score_local:
                 best_score_local = score
                 best_mask_local = cmask
@@ -940,11 +1094,13 @@ def extract_overlay(preview_path: str | Path, output_root: str | Path = "output"
         alpha_soft_local = _soft_alpha_from_binary_mask(mask_refined_local)
         rgba_local = np.array(source_img)
         rgba_local[:, :, 3] = alpha_soft_local
+        rgba_local = _decontaminate_edge_rgb(rgba_local, mask_refined_local)
         canvas_rgba_local, canvas_mask_local, bbox_px_local, bbox_norm_local = _fit_rgba_to_standard_canvas(rgba_local)
         # Final guard on standardized canvas: cut detached lower decorative blobs.
         canvas_mask_local = _drop_lower_decorative_components(canvas_mask_local)
         canvas_alpha_local = _soft_alpha_from_binary_mask(canvas_mask_local)
         canvas_rgba_local[:, :, 3] = canvas_alpha_local
+        canvas_rgba_local = _decontaminate_edge_rgb(canvas_rgba_local, canvas_mask_local)
         quality_local, fg_local, tr_local = _compute_quality(canvas_mask_local)
         qc_metrics_local = _compute_qc_metrics(canvas_mask_local, canvas_rgba_local[:, :, 3])
         return (
