@@ -396,6 +396,92 @@ def _compose_final(background: Image.Image, overlay: Image.Image, target_width_p
     return bg.convert("RGB"), score
 
 
+def _mask_edge_density(mask: np.ndarray) -> float:
+    fg = np.count_nonzero(mask > 0)
+    if fg == 0:
+        return 0.0
+    edges = cv2.Canny((mask > 0).astype(np.uint8) * 255, 40, 120)
+    return float(np.count_nonzero(edges > 0) / fg)
+
+
+def _keep_main_components(mask: np.ndarray) -> np.ndarray:
+    h, w = mask.shape
+    n, labels, stats, centroids = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
+    if n <= 1:
+        return mask
+    center = np.array([w / 2.0, h / 2.0], dtype=np.float32)
+    rows = []
+    for i in range(1, n):
+        x = int(stats[i, cv2.CC_STAT_LEFT])
+        y = int(stats[i, cv2.CC_STAT_TOP])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area <= 0:
+            continue
+        cx, cy = centroids[i]
+        dist = float(np.linalg.norm(np.array([cx, cy], dtype=np.float32) - center) / max(w, h))
+        score = area * (1.0 - min(0.9, dist))
+        rows.append((i, x, y, bw, bh, area, cx, cy, score))
+    if not rows:
+        return mask
+    rows.sort(key=lambda r: r[8], reverse=True)
+    max_area = max(r[5] for r in rows)
+    min_keep = max(40, int(max_area * 0.01), int(0.00002 * h * w))
+    keep = np.zeros_like(mask, dtype=np.uint8)
+    acc = 0
+    total = sum(r[5] for r in rows if r[5] >= min_keep)
+    for i, x, y, bw, bh, area, cx, cy, _ in rows:
+        if area < min_keep:
+            continue
+        # remove tiny corner logos/hearts/icons
+        corner = (x < 0.12 * w and y < 0.12 * h) or (x + bw > 0.88 * w and y < 0.12 * h) or (x < 0.12 * w and y + bh > 0.88 * h) or (x + bw > 0.88 * w and y + bh > 0.88 * h)
+        if corner and area < int(max_area * 0.25):
+            continue
+        keep[labels == i] = 255
+        acc += area
+        if total > 0 and (acc / total) >= 0.995:
+            break
+    return keep
+
+
+def _sanitize_overlay_for_publish(overlay: Image.Image) -> Image.Image:
+    """
+    Remove severe background-blob artifacts from extracted overlay while
+    preserving original font colors/outline.
+    """
+    rgba = np.array(overlay.convert("RGBA"))
+    alpha = rgba[:, :, 3]
+    mask = (alpha > 20).astype(np.uint8) * 255
+    fg_ratio = float(np.count_nonzero(mask > 0) / max(1, mask.size))
+    edge_d = _mask_edge_density(mask)
+    # suspicious: too much filled foreground with weak contour density
+    suspicious_blob = fg_ratio > 0.16 and edge_d < 0.042
+    if not suspicious_blob:
+        return overlay
+
+    rgb = rgba[:, :, :3]
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    s = hsv[:, :, 1]
+    v = hsv[:, :, 2]
+
+    text_like = ((v < 72) | (v > 172) | (s > 48)).astype(np.uint8) * 255
+    text_like = cv2.bitwise_and(text_like, mask)
+    text_like = cv2.morphologyEx(text_like, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8), iterations=1)
+    text_like = cv2.morphologyEx(text_like, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8), iterations=1)
+    text_like = _keep_main_components(text_like)
+
+    new_ratio = float(np.count_nonzero(text_like > 0) / max(1, text_like.size))
+    # If sanitizer over-prunes, keep original.
+    if new_ratio < 0.02 or new_ratio > 0.22:
+        return overlay
+
+    new_alpha = np.zeros_like(alpha, dtype=np.uint8)
+    new_alpha[text_like > 0] = alpha[text_like > 0]
+    rgba[:, :, 3] = new_alpha
+    return Image.fromarray(rgba, mode="RGBA")
+
+
 def _derive_font_name(path: Path) -> str:
     return path.stem.replace("-", " ").replace("_", " ").strip().title()
 
@@ -419,6 +505,7 @@ def publish_font_image(
 
     overlay_path = Path(extraction.overlay_path)
     overlay = Image.open(overlay_path).convert("RGBA")
+    overlay = _sanitize_overlay_for_publish(overlay)
 
     effective_font_name = font_name.strip() or _derive_font_name(src)
     bg_img, comfy_used, fallback_reason, prompt_id, seed = _generate_background(
@@ -507,7 +594,7 @@ def run_publish_batch(
     category: str = "fonts",
     font_name: str = "",
     use_comfy_background: bool = True,
-    target_width_pct: float = 0.72,
+    target_width_pct: float = 0.78,
 ) -> list[PublishResult]:
     src = Path(input_path)
     files = _iter_input_files(src)

@@ -310,8 +310,8 @@ Examples:
     p_pub.add_argument(
         "--target-width",
         type=float,
-        default=0.72,
-        help="Target width ratio for wordmark on canvas, 0.45..0.88 (default: 0.72)",
+        default=0.78,
+        help="Target width ratio for wordmark on canvas, 0.45..0.88 (default: 0.78)",
     )
 
     args = parser.parse_args()
