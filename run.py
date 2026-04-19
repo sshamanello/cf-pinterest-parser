@@ -20,6 +20,7 @@ import logging
 import sys
 
 from config import CATEGORIES
+from auto_pin_pipeline import run_auto_pin_batch
 from comfy_processor import process_products, create_pin
 from extractor import run_batch
 from font_generator import generate_font_asset, GEN_MODES
@@ -215,6 +216,20 @@ def cmd_publish_fonts(
     )
 
 
+def cmd_auto_pin(input_path: str, output_root: str):
+    """Fully automatic pin pipeline: bbox -> mode -> pin/meta."""
+    logger.info("Mode: auto-pin")
+    logger.info("Input: %s", input_path)
+    logger.info("Output root: %s", output_root)
+    results = run_auto_pin_batch(input_path=input_path, output_root=output_root)
+    if not results:
+        logger.warning("[!] No images processed")
+        return
+    gen = sum(1 for r in results if r.status == "generated")
+    rej = sum(1 for r in results if r.status == "rejected")
+    logger.info("[OK] Auto-pin processed: %d | generated: %d | rejected: %d", len(results), gen, rej)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="CF Pinterest Parser - quick launcher",
@@ -227,6 +242,7 @@ Commands:
   extract  Remove background and save transparent overlays
   generate-font  Generate font wordmark asset (signature-lock/full-regen scaffold)
   publish-fonts  Build publish-ready images (overlay + unique background)
+  auto-pin  Full automatic pin pipeline (bbox/mode/layout + pin/meta)
 
 Examples:
   python run.py parse                          # all, 3 pages
@@ -235,6 +251,7 @@ Examples:
   python run.py extract --input ./previews      # extraction only
   python run.py generate-font --input ./preview.jpg --font-name \"Amore\" --category wedding
   python run.py publish-fonts --input ./test/extractor/input --output ./output --category fonts
+  python run.py auto-pin --input ./test/extractor/input --output ./output
         """,
     )
 
@@ -313,6 +330,19 @@ Examples:
         default=0.78,
         help="Target width ratio for wordmark on canvas, 0.45..0.88 (default: 0.78)",
     )
+    p_auto = subparsers.add_parser("auto-pin", help="Fully automatic pin generation")
+    p_auto.add_argument(
+        "--input",
+        "-i",
+        required=True,
+        help="File or folder with source preview images",
+    )
+    p_auto.add_argument(
+        "--output",
+        "-o",
+        default="output",
+        help="Output root folder (default: output)",
+    )
 
     args = parser.parse_args()
 
@@ -341,6 +371,8 @@ Examples:
             use_comfy_background=not args.no_comfy,
             target_width_pct=args.target_width,
         )
+    elif args.command == "auto-pin":
+        cmd_auto_pin(input_path=args.input, output_root=args.output)
     else:
         parser.print_help()
         sys.exit(1)

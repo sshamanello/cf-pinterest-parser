@@ -16,6 +16,31 @@
 
 ## Изменения 2026-04-19
 
+- Реализован новый полностью автоматический пайплайн пинов: `auto-pin` (без ручных решений в цикле).
+  - Новый модуль: `auto_pin_pipeline.py`.
+  - Новая команда CLI:
+    - `python run.py auto-pin --input <file_or_dir> --output <output_root>`
+  - Выход по каждому объекту:
+    - `output/<font_id>/auto_pin/pin_01.png`
+    - `output/<font_id>/auto_pin/pin_01.jpg`
+    - `output/<font_id>/auto_pin/meta.json`
+  - Batch-отчёт:
+    - `output/_reports/auto_pin_batch_report.json`
+- Что делает `auto-pin` автоматически:
+  - детектит `bbox` preview-блока (`_detect_preview_bbox`),
+  - считает метрики `complexity_score`, `quality_score`, blur/confidence,
+  - выбирает режим: `extract_mode` / `card_mode` / `fallback_mode` / `reject_mode` по формальным порогам,
+  - выбирает `style`, `template`, `layout` и тему фона,
+  - собирает финальный pin `1000x1500` и сохраняет метаданные.
+- Реализованы 5 шаблонов компоновки:
+  - `centered_card`, `top_card`, `bottom_card`, `sticker_center`, `framed_catalog`.
+- Для `extract_mode` добавлена автоматическая проверка успешности extraction:
+  - проверка foreground ratio, edge-noise ratio, ширины объекта и минимальной читаемости;
+  - при провале extraction — автоматический переход в `card_mode`.
+- Smoke-run нового пайплайна:
+  - `python run.py auto-pin --input ./test/extractor/input --output ./test/extractor/output`
+  - итог: `Processed=11 | generated=11 | rejected=0`.
+
 - Стабилизирован основной `script-first` extractor под большой батч (без зависаний):
   - `rembg`-ensemble отключён по умолчанию (переменная `EXTRACTOR_REMBG_MODELS` теперь пустая в default),
   - heavy-model fallback остаётся опциональным через env, но не тормозит основной поток.
