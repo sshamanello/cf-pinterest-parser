@@ -109,8 +109,7 @@ def _detect_preview_bbox(img_rgb: np.ndarray) -> tuple[dict, float]:
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8), iterations=1)
 
     n, _, stats, centroids = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), connectivity=8)
-    best = None
-    best_score = -1.0
+    candidates: list[tuple[float, tuple[int, int, int, int, float, float, float, float, float]]] = []
     for i in range(1, n):
         x = int(stats[i, cv2.CC_STAT_LEFT])
         y = int(stats[i, cv2.CC_STAT_TOP])
@@ -135,14 +134,41 @@ def _detect_preview_bbox(img_rgb: np.ndarray) -> tuple[dict, float]:
         brightness_score = max(0.1, min(1.0, (mean_g - 34.0) / 120.0))
         dark_lower_penalty = 0.35 if (y_norm > 0.62 and mean_g < 85.0) else 1.0
         score = area * fill * (1.0 - min(0.95, center_dist)) * (0.55 + 0.45 * upper_score) * brightness_score * dark_lower_penalty
-        if score > best_score:
-            best_score = score
-            best = (x, y, bw, bh, area_ratio, fill, center_dist)
+        candidates.append((score, (x, y, bw, bh, area_ratio, fill, center_dist, y_norm, mean_g)))
 
-    if best is None:
+    if not candidates:
         return {"x": int(x0_nb), "y": int(y0_nb), "width": int(cw), "height": int(ch)}, 0.52
 
-    x, y, bw, bh, area_ratio, fill, center_dist = best
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    best_score, best = candidates[0]
+    x, y, bw, bh, area_ratio, fill, center_dist, y_norm, mean_g = best
+
+    # Guard: avoid selecting lower dark site block instead of top preview.
+    if y_norm > 0.62 and mean_g < 95.0:
+        replacement = None
+        for alt_score, alt in candidates[1:]:
+            _, _, _, _, alt_area, _, _, alt_y_norm, alt_mean = alt
+            if alt_y_norm < 0.60 and alt_area >= 0.10 and alt_mean > 95.0 and alt_score >= best_score * 0.38:
+                replacement = (alt_score, alt)
+                break
+        if replacement is not None:
+            best_score, best = replacement
+            x, y, bw, bh, area_ratio, fill, center_dist, y_norm, mean_g = best
+        else:
+            # Strong deterministic fallback for CF-like previews.
+            x = int(round(cw * 0.21))
+            y = int(round(ch * 0.195))
+            bw = int(round(cw * 0.58))
+            bh = int(round(ch * 0.258))
+            x = max(0, min(cw - 1, x))
+            y = max(0, min(ch - 1, y))
+            bw = max(1, min(cw - x, bw))
+            bh = max(1, min(ch - y, bh))
+            area_ratio = (bw * bh) / float(max(1, cw * ch))
+            fill = 0.82
+            center_dist = 0.18
+            mean_g = float(np.mean(gray[y : y + bh, x : x + bw])) if bh > 0 and bw > 0 else 120.0
+
     x += x0_nb
     y += y0_nb
     conf = 0.52
@@ -531,7 +557,7 @@ def run_auto_pin_batch(input_path: str | Path, output_root: str | Path = "output
         )
 
         simple_bg = _estimate_simple_background(crop_rgb)
-        if mode == "card_mode" and simple_bg and quality >= 0.68 and complexity <= 0.72 and det_conf >= 0.66:
+        if mode == "card_mode" and simple_bg and quality >= 0.90 and complexity <= 0.18 and det_conf >= 0.78 and blur >= 0.38:
             mode = "extract_mode"
 
         template = _template_for_mode(mode, style)
@@ -570,8 +596,10 @@ def run_auto_pin_batch(input_path: str | Path, output_root: str | Path = "output
         object_img: Image.Image
         final_mode = mode
         if mode == "extract_mode":
-            # Run extraction on original image (already includes robust crop/mask logic).
-            extraction = extract_overlay(src, output_root=out_root)
+            # Run extraction on detected preview crop to avoid picking lower site blocks.
+            crop_src = out_dir / "_preview_crop.png"
+            crop.save(crop_src, "PNG")
+            extraction = extract_overlay(crop_src, output_root=out_root)
             report = json.loads(Path(extraction.report_path).read_text(encoding="utf-8"))
             ok = _extract_success(report, Path(extraction.mask_path), preview_bbox_w=bbox["width"])
             if not ok:
