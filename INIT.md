@@ -1,6 +1,6 @@
 # CF Pinterest Parser — Быстрая инициализация проекта
 
-> Последнее обновление: 2026-04-19
+> Последнее обновление: 2026-04-21
 > Этот файл содержит полный контекст проекта для быстрого восстановления работы
 
 ---
@@ -15,6 +15,32 @@
 ## Изменения 2026-04-18
 
 ## Изменения 2026-04-19
+
+## Изменения 2026-04-21
+
+- Выполнен первый успешный продовый прогон `prod-auto-pin` на fonts:
+  - команда:
+    - `python3 run.py prod-auto-pin --niche fonts --limit 20 --output ./output/prod/fonts --sync-sheet`
+  - перед запуском локально установлен Chromium для Playwright:
+    - `python3 -m playwright install chromium`
+  - результат:
+    - `parsed=84`
+    - `selected=20`
+    - `downloaded=20`
+    - `generated=20`
+    - `rejected=0`
+  - Google Sheet sync:
+    - `inserted=1`
+    - `updated=19`
+- Продовые артефакты лежат в:
+  - `output/prod/fonts/_input` — скачанные preview,
+  - `output/prod/fonts/<slug>/auto_pin/pin_01.png`,
+  - `output/prod/fonts/<slug>/auto_pin/pin_01.jpg`,
+  - `output/prod/fonts/<slug>/auto_pin/meta.json`,
+  - `output/prod/fonts/_reports/auto_pin_batch_report.json`.
+- Важный operational note:
+  - первый запуск до установки Chromium падал на `BrowserType.launch: Executable doesn't exist`,
+  - после `playwright install chromium` парсинг Creative Fabrica работает.
 
 - Добавлен продовый запуск первых товаров Creative Fabrica через новый CLI `prod-auto-pin`:
   - новый модуль: `prod_auto_pin_pipeline.py`.
