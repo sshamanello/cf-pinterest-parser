@@ -27,6 +27,7 @@ from extractor import run_batch
 from font_generator import generate_font_asset, GEN_MODES
 from font_publish_pipeline import run_publish_batch
 from parser import parse_category
+from prod_auto_pin_pipeline import run_prod_auto_pin
 from sheets import append_products, ensure_tabs, get_sheet_client, test_connection, upsert_auto_pin_report
 
 logging.basicConfig(
@@ -246,6 +247,35 @@ def cmd_sync_auto_pin(report_path: str, tab: str):
     logger.info("[OK] Sheet sync complete | inserted: %d | updated: %d", inserted, updated)
 
 
+def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync_sheet: bool):
+    """Production flow: parse products, download previews, generate pins, optionally sync sheet."""
+    logger.info("Mode: prod auto-pin")
+    logger.info("Niche: %s", niche)
+    logger.info("Limit: %d", limit)
+    logger.info("Output root: %s", output_root)
+
+    result = run_prod_auto_pin(niche=niche, limit=limit, output_root=output_root, pages=pages)
+    logger.info(
+        "[OK] Prod auto-pin | parsed: %d | selected: %d | downloaded: %d | generated: %d | rejected: %d",
+        result.parsed_count,
+        result.selected_count,
+        result.downloaded_count,
+        result.generated_count,
+        result.rejected_count,
+    )
+    logger.info("Report: %s", result.report_path)
+
+    if sync_sheet:
+        spreadsheet = get_sheet_client()
+        ensure_tabs(spreadsheet)
+        inserted, updated = upsert_auto_pin_report(
+            spreadsheet=spreadsheet,
+            tab=niche,
+            report_path=result.report_path,
+        )
+        logger.info("[OK] Sheet sync complete | inserted: %d | updated: %d", inserted, updated)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="CF Pinterest Parser - quick launcher",
@@ -260,6 +290,7 @@ Commands:
   publish-fonts  Build publish-ready images (overlay + unique background)
   auto-pin  Full automatic pin pipeline (bbox/mode/layout + pin/meta)
   sync-auto-pin  Upsert auto-pin report to Google Sheet by slug
+  prod-auto-pin  Parse first products, generate prod pins, optionally sync Sheet
 
 Examples:
   python run.py parse                          # all, 3 pages
@@ -270,6 +301,7 @@ Examples:
   python run.py publish-fonts --input ./test/extractor/input --output ./output --category fonts
   python run.py auto-pin --input ./test/extractor/input --output ./output
   python run.py sync-auto-pin --report ./test/extractor/output/_reports/auto_pin_batch_report.json --tab fonts
+  python run.py prod-auto-pin --niche fonts --limit 20 --sync-sheet
         """,
     )
 
@@ -375,6 +407,12 @@ Examples:
         choices=list(CATEGORIES.keys()),
         help="Sheet tab/category (default: fonts)",
     )
+    p_prod = subparsers.add_parser("prod-auto-pin", help="Production auto-pin run from Creative Fabrica")
+    p_prod.add_argument("--niche", "-n", default="fonts", choices=list(CATEGORIES.keys()), help="Category tab (default: fonts)")
+    p_prod.add_argument("--limit", "-l", type=int, default=20, help="How many products to process (default: 20)")
+    p_prod.add_argument("--pages", "-p", type=int, default=1, help="How many category pages to parse (default: 1)")
+    p_prod.add_argument("--output", "-o", default="output/prod/fonts", help="Production output root")
+    p_prod.add_argument("--sync-sheet", action="store_true", help="Sync generated prod report to Google Sheet")
 
     args = parser.parse_args()
 
@@ -407,6 +445,14 @@ Examples:
         cmd_auto_pin(input_path=args.input, output_root=args.output)
     elif args.command == "sync-auto-pin":
         cmd_sync_auto_pin(report_path=args.report, tab=args.tab)
+    elif args.command == "prod-auto-pin":
+        cmd_prod_auto_pin(
+            niche=args.niche,
+            limit=args.limit,
+            output_root=args.output,
+            pages=args.pages,
+            sync_sheet=args.sync_sheet,
+        )
     else:
         parser.print_help()
         sys.exit(1)

@@ -16,6 +16,21 @@
 
 ## Изменения 2026-04-19
 
+- Добавлен продовый запуск первых товаров Creative Fabrica через новый CLI `prod-auto-pin`:
+  - новый модуль: `prod_auto_pin_pipeline.py`.
+  - команда:
+    - `python run.py prod-auto-pin --niche fonts --limit 20 --output ./output/prod/fonts --sync-sheet`
+  - пайплайн:
+    - парсит категорию через существующий `parse_category`,
+    - берёт первые `limit` товаров,
+    - скачивает preview-картинки в `output/prod/fonts/_input`,
+    - прогоняет `auto-pin`,
+    - обогащает `auto_pin_batch_report.json` реальными `title/image_url/cf_url/affiliate_url/slug`,
+    - при `--sync-sheet` делает upsert в Google Sheet.
+- Улучшен sync в `sheets.py`:
+  - при наличии данных товара в отчёте таблица теперь получает реальные `title`, `image_url`, `cf_url`, `affiliate_url`,
+  - fallback по slug остаётся только для старых/тестовых отчётов без product metadata.
+
 - Добавлена автоматическая выгрузка результатов `auto-pin` в Google Sheets (upsert по `slug`):
   - новый CLI:
     - `python run.py sync-auto-pin --report ./test/extractor/output/_reports/auto_pin_batch_report.json --tab fonts`

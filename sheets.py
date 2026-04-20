@@ -249,10 +249,10 @@ def upsert_auto_pin_report(
                 hook_text = ""
 
         row_map = {
-            "title": _slug_to_title(slug),
-            "image_url": "",
-            "cf_url": _cf_url_from_slug(slug),
-            "affiliate_url": _affiliate_url_from_slug(slug),
+            "title": item.get("title") or _slug_to_title(slug),
+            "image_url": item.get("image_url", ""),
+            "cf_url": item.get("cf_url") or _cf_url_from_slug(slug),
+            "affiliate_url": item.get("affiliate_url") or _affiliate_url_from_slug(slug),
             "slug": slug,
             "posted": "FALSE",
             "pin_id": "",
