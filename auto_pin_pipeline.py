@@ -1,12 +1,13 @@
 import json
 import logging
 import shutil
+import hashlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from extractor import SUPPORTED_SUFFIXES, extract_overlay
 
@@ -24,6 +25,49 @@ STYLE_THEME_MAP = {
     "handwritten": "paper_soft",
     "feminine": "pink_cream",
     "gothic": "dark_fog",
+}
+
+HOOKS_BY_STYLE = {
+    "kids": [
+        "Make Cute Designs in Minutes",
+        "Perfect Font for Fun Crafts",
+        "Create Playful Labels Fast",
+    ],
+    "wedding": [
+        "Elegant Script for Wedding Prints",
+        "Make Romantic Designs Fast",
+        "Perfect Font for Invitations",
+    ],
+    "luxury": [
+        "Premium Typeface for Brand Looks",
+        "Create Editorial Style in Minutes",
+        "Luxury Font for Premium Graphics",
+    ],
+    "retro": [
+        "Retro Vibes for Your Next Project",
+        "Vintage Style Font That Pops",
+        "Make Warm Nostalgic Designs Fast",
+    ],
+    "minimal": [
+        "Clean Font for Modern Designs",
+        "Simple Typography That Converts",
+        "Minimal Look, Big Impact",
+    ],
+    "handwritten": [
+        "Handwritten Style in One Click",
+        "Natural Script for Daily Designs",
+        "Turn Ideas into Beautiful Text",
+    ],
+    "feminine": [
+        "Soft Feminine Font for Branding",
+        "Pretty Typography for Cute Projects",
+        "Create Sweet Aesthetic Designs",
+    ],
+    "gothic": [
+        "Bold Typeface for Dramatic Looks",
+        "Dark Style Font for Eye-Catching Pins",
+        "Make High-Contrast Designs Fast",
+    ],
 }
 
 
@@ -44,6 +88,7 @@ class AutoPinResult:
     pin_jpg: str
     meta_json: str
     reject_reason: str
+    hook_enabled: bool
 
 
 def _iter_input_files(input_path: Path) -> list[Path]:
@@ -247,7 +292,7 @@ def _layout_from_template(template: str, mode: str) -> dict:
         return {
             "template": "framed_catalog",
             "rotation_deg": 0.0,
-            "scale_pct": 70,
+            "scale_pct": 76,
             "position_y": "center",
             "corner_radius": 24,
             "shadow": True,
@@ -257,7 +302,7 @@ def _layout_from_template(template: str, mode: str) -> dict:
         return {
             "template": template,
             "rotation_deg": -1.2,
-            "scale_pct": 74,
+            "scale_pct": 80,
             "position_y": "upper_middle",
             "corner_radius": 22,
             "shadow": True,
@@ -267,7 +312,7 @@ def _layout_from_template(template: str, mode: str) -> dict:
         return {
             "template": template,
             "rotation_deg": 0.0,
-            "scale_pct": 72,
+            "scale_pct": 80,
             "position_y": "top",
             "corner_radius": 18,
             "shadow": True,
@@ -277,7 +322,7 @@ def _layout_from_template(template: str, mode: str) -> dict:
         return {
             "template": template,
             "rotation_deg": 0.0,
-            "scale_pct": 72,
+            "scale_pct": 80,
             "position_y": "bottom",
             "corner_radius": 18,
             "shadow": True,
@@ -286,7 +331,7 @@ def _layout_from_template(template: str, mode: str) -> dict:
     return {
         "template": "centered_card",
         "rotation_deg": 0.0,
-        "scale_pct": 76 if mode == "extract_mode" else 72,
+        "scale_pct": 82 if mode == "extract_mode" else 80,
         "position_y": "center",
         "corner_radius": 18,
         "shadow": True,
@@ -372,7 +417,7 @@ def _apply_shadow(canvas: Image.Image, obj: Image.Image, x: int, y: int, blur: i
     canvas.alpha_composite(shadow, (x + 8, y + 10))
 
 
-def _paste_layout(canvas: Image.Image, obj: Image.Image, layout: dict) -> None:
+def _paste_layout(canvas: Image.Image, obj: Image.Image, layout: dict) -> tuple[int, int, int, int]:
     template = layout["template"]
     scale_pct = int(layout["scale_pct"])
     rotation = float(layout["rotation_deg"])
@@ -380,12 +425,12 @@ def _paste_layout(canvas: Image.Image, obj: Image.Image, layout: dict) -> None:
     frame = bool(layout["frame"])
 
     ow, oh = obj.size
-    target_w = int(PIN_W * max(0.45, min(0.88, scale_pct / 100.0)))
+    target_w = int(PIN_W * max(0.55, min(0.94, scale_pct / 100.0)))
     k = target_w / float(max(1, ow))
     nw = max(1, int(round(ow * k)))
     nh = max(1, int(round(oh * k)))
-    if nh > int(PIN_H * 0.66):
-        kk = (PIN_H * 0.66) / float(nh)
+    if nh > int(PIN_H * 0.76):
+        kk = (PIN_H * 0.76) / float(nh)
         nw = max(1, int(round(nw * kk)))
         nh = max(1, int(round(nh * kk)))
 
@@ -403,10 +448,10 @@ def _paste_layout(canvas: Image.Image, obj: Image.Image, layout: dict) -> None:
         nw, nh = obj.size
 
     py_map = {
-        "top": int(PIN_H * 0.18),
-        "upper_middle": int(PIN_H * 0.24),
+        "top": int(PIN_H * 0.12),
+        "upper_middle": int(PIN_H * 0.18),
         "center": int((PIN_H - nh) // 2),
-        "bottom": int(PIN_H * 0.54),
+        "bottom": int(PIN_H * 0.50),
     }
     py = py_map.get(layout["position_y"], py_map["center"])
     py = max(20, min(PIN_H - nh - 20, py))
@@ -424,6 +469,136 @@ def _paste_layout(canvas: Image.Image, obj: Image.Image, layout: dict) -> None:
             outline=(255, 255, 255, 180),
             width=3,
         )
+    return px, py, nw, nh
+
+
+def _should_add_hook(font_id: str) -> bool:
+    # Deterministic 50/50 split.
+    h = hashlib.sha1(font_id.encode("utf-8")).hexdigest()
+    return int(h[:2], 16) < 128
+
+
+def _select_hook_ids(files: list[Path]) -> set[str]:
+    if not files:
+        return set()
+    ranked = sorted(
+        files,
+        key=lambda p: hashlib.sha1(p.stem.encode("utf-8")).hexdigest(),
+    )
+    count = int(round(len(ranked) * 0.5))
+    return {p.stem for p in ranked[:count]}
+
+
+def _pick_hook(style: str, font_id: str) -> str:
+    variants = HOOKS_BY_STYLE.get(style, HOOKS_BY_STYLE["minimal"])
+    idx = int(hashlib.md5(font_id.encode("utf-8")).hexdigest()[:2], 16) % len(variants)
+    return variants[idx]
+
+
+def _pick_cta(style: str) -> str:
+    if style in {"kids", "feminine"}:
+        return "Tap To View Full Font"
+    if style in {"wedding", "handwritten"}:
+        return "Get The Full Font Pack"
+    return "See Font Details"
+
+
+def _text_colors_from_bg(bg: Image.Image) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    arr = np.array(bg.convert("RGB"))
+    mean = arr.reshape(-1, 3).mean(axis=0)
+    lum = float(0.2126 * mean[0] + 0.7152 * mean[1] + 0.0722 * mean[2])
+    if lum >= 160:
+        return (30, 30, 36), (72, 72, 82)
+    return (245, 245, 248), (216, 216, 224)
+
+
+def _get_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+    candidates = []
+    if bold:
+        candidates.extend(
+            [
+                "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                "/Library/Fonts/Arial Bold.ttf",
+                "/System/Library/Fonts/Supplemental/Helvetica.ttc",
+                "DejaVuSans-Bold.ttf",
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/Library/Fonts/Arial.ttf",
+                "/System/Library/Fonts/Supplemental/Helvetica.ttc",
+                "DejaVuSans.ttf",
+            ]
+        )
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size=size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def _fit_font(draw: ImageDraw.ImageDraw, text: str, max_width: int, start_size: int, min_size: int, bold: bool) -> ImageFont.ImageFont:
+    size = start_size
+    while size >= min_size:
+        f = _get_font(size, bold=bold)
+        w = int(draw.textlength(text, font=f))
+        if w <= max_width:
+            return f
+        size -= 2
+    return _get_font(min_size, bold=bold)
+
+
+def _draw_hook_text(
+    canvas: Image.Image,
+    layout: dict,
+    object_bbox: tuple[int, int, int, int],
+    hook: str,
+    cta: str,
+) -> None:
+    px, py, nw, nh = object_bbox
+    draw = ImageDraw.Draw(canvas)
+    fg, sub = _text_colors_from_bg(canvas)
+    max_text_w = int(PIN_W * 0.86)
+    hook_font = _fit_font(draw, hook, max_text_w, start_size=56, min_size=28, bold=True)
+    cta_font = _fit_font(draw, cta, max_text_w, start_size=38, min_size=24, bold=True)
+
+    # Place text in the largest free vertical zone.
+    top_free = py
+    bottom_free = PIN_H - (py + nh)
+    place_top = top_free >= bottom_free
+    if layout["position_y"] == "top":
+        place_top = False
+    if layout["position_y"] == "bottom":
+        place_top = True
+
+    hw = int(draw.textlength(hook, font=hook_font))
+    cw = int(draw.textlength(cta, font=cta_font))
+    hx = max(24, (PIN_W - hw) // 2)
+    cx = max(24, (PIN_W - cw) // 2)
+
+    if place_top:
+        hy = max(26, min(py - 120, int(PIN_H * 0.10)))
+        cy = hy + 64
+    else:
+        hy = min(PIN_H - 168, py + nh + 32)
+        cy = hy + 64
+
+    # Soft plate under text for readability.
+    plate_w = min(PIN_W - 40, max(hw, cw) + 84)
+    plate_h = 138
+    plate_x = (PIN_W - plate_w) // 2
+    plate_y = hy - 18
+    draw.rounded_rectangle(
+        [plate_x, plate_y, plate_x + plate_w, plate_y + plate_h],
+        radius=22,
+        fill=(255, 255, 255, 54) if fg[0] < 100 else (0, 0, 0, 46),
+    )
+
+    draw.text((hx, hy), hook, font=hook_font, fill=fg)
+    draw.text((cx, cy), cta, font=cta_font, fill=sub)
 
 
 def _crop_bbox(img: Image.Image, bbox: dict) -> Image.Image:
@@ -502,6 +677,9 @@ def _build_meta(
     layout: dict,
     status: str,
     reject_reason: str = "",
+    hook_enabled: bool = False,
+    hook_text: str = "",
+    cta_text: str = "",
 ) -> dict:
     theme = STYLE_THEME_MAP.get(style, "clean_neutral")
     return {
@@ -516,6 +694,9 @@ def _build_meta(
         "rotation_deg": float(layout["rotation_deg"]),
         "scale_pct": int(layout["scale_pct"]),
         "layout": layout,
+        "hook_enabled": hook_enabled,
+        "hook_text": hook_text,
+        "cta_text": cta_text,
         "status": status,
         "reject_reason": reject_reason,
     }
@@ -526,6 +707,7 @@ def run_auto_pin_batch(input_path: str | Path, output_root: str | Path = "output
     out_root = Path(output_root)
     out_root.mkdir(parents=True, exist_ok=True)
     files = _iter_input_files(src_path)
+    hook_ids = _select_hook_ids(files)
     results: list[AutoPinResult] = []
 
     for src in files:
@@ -566,7 +748,7 @@ def run_auto_pin_batch(input_path: str | Path, output_root: str | Path = "output
         if mode == "reject_mode":
             rejected_copy = out_dir / f"source_original{src.suffix.lower()}"
             shutil.copy2(src, rejected_copy)
-            meta = _build_meta(src, bbox, mode, style, complexity, quality, layout, "rejected", reason)
+            meta = _build_meta(src, bbox, mode, style, complexity, quality, layout, "rejected", reason, False, "", "")
             meta_json.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
             results.append(
                 AutoPinResult(
@@ -585,11 +767,13 @@ def run_auto_pin_batch(input_path: str | Path, output_root: str | Path = "output
                     pin_jpg="",
                     meta_json=str(meta_json),
                     reject_reason=reason,
+                    hook_enabled=False,
                 )
             )
             logger.info("[%s] status=rejected reason=%s", font_id, reason)
             continue
 
+        hook_enabled = font_id in hook_ids
         bg = _render_background(style=style, seed=(abs(hash(src.name)) % (2**31)))
         canvas = bg.convert("RGBA")
 
@@ -614,7 +798,19 @@ def run_auto_pin_batch(input_path: str | Path, output_root: str | Path = "output
         else:
             object_img = _rounded_card(crop, radius=int(layout["corner_radius"]))
 
-        _paste_layout(canvas, object_img, layout)
+        if not hook_enabled and layout.get("position_y") in {"top", "bottom"}:
+            # Keep composition denser for no-text variants.
+            layout = dict(layout)
+            layout["position_y"] = "center"
+            layout["scale_pct"] = int(min(88, int(layout["scale_pct"]) + 4))
+
+        obj_bbox = _paste_layout(canvas, object_img, layout)
+        hook_text = ""
+        cta_text = ""
+        if hook_enabled:
+            hook_text = _pick_hook(style, font_id)
+            cta_text = _pick_cta(style)
+            _draw_hook_text(canvas, layout, obj_bbox, hook_text, cta_text)
 
         canvas.convert("RGB").save(pin_png, "PNG")
         canvas.convert("RGB").save(pin_jpg, "JPEG", quality=94, optimize=True)
@@ -628,6 +824,9 @@ def run_auto_pin_batch(input_path: str | Path, output_root: str | Path = "output
             quality=quality,
             layout=layout,
             status="generated",
+            hook_enabled=hook_enabled,
+            hook_text=hook_text,
+            cta_text=cta_text,
         )
         meta_json.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         results.append(
@@ -647,14 +846,16 @@ def run_auto_pin_batch(input_path: str | Path, output_root: str | Path = "output
                 pin_jpg=str(pin_jpg),
                 meta_json=str(meta_json),
                 reject_reason="",
+                hook_enabled=hook_enabled,
             )
         )
         logger.info(
-            "[%s] status=generated mode=%s style=%s template=%s q=%.3f c=%.3f",
+            "[%s] status=generated mode=%s style=%s template=%s hook=%s q=%.3f c=%.3f",
             font_id,
             final_mode,
             style,
             layout["template"],
+            hook_enabled,
             quality,
             complexity,
         )
