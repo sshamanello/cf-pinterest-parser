@@ -16,6 +16,22 @@
 
 ## Изменения 2026-04-19
 
+- Добавлена автоматическая выгрузка результатов `auto-pin` в Google Sheets (upsert по `slug`):
+  - новый CLI:
+    - `python run.py sync-auto-pin --report ./test/extractor/output/_reports/auto_pin_batch_report.json --tab fonts`
+  - новый метод в `sheets.py`: `upsert_auto_pin_report(...)`.
+  - логика:
+    - читает `auto_pin_batch_report.json`,
+    - обновляет существующие строки и добавляет новые по `slug`,
+    - дополняет таблицу новыми колонками (без удаления старых),
+    - сохраняет/не затирает критичные публикационные поля (`posted`, `pin_id`, `published_at`).
+- Для выгрузки добавлены рабочие поля (авто-добавляются в header, если отсутствуют):
+  - `pin_path`, `mode`, `template_used`, `hook_enabled`, `hook_text`,
+  - `publish_status`, `published_at`, `error_reason`.
+- Исправлена безопасность работы с header в `ensure_tabs`:
+  - вместо `insert_row` на 1-ю строку теперь делается `update` header-диапазона,
+  - это предотвращает сдвиг данных вниз при несовпадении заголовков.
+
 - Добавлен A/B режим hook-текста в `auto-pin`:
   - примерно 50% пинов в батче получают текстовый блок `hook + CTA`,
   - выбор детерминированный по списку файлов (стабильный результат при повторных прогонах),

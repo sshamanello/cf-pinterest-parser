@@ -3,11 +3,19 @@ import logging
 import os
 import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 
 import gspread
 from google.oauth2.service_account import Credentials
 
-from config import COLUMNS, GOOGLE_CREDENTIALS_PATH, GOOGLE_SHEET_ID, SHEET_TABS
+from config import (
+    AFFILIATE_URL_TEMPLATE,
+    CF_AFFILIATE_ID,
+    COLUMNS,
+    GOOGLE_CREDENTIALS_PATH,
+    GOOGLE_SHEET_ID,
+    SHEET_TABS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +64,10 @@ def ensure_tabs(spreadsheet: gspread.Spreadsheet) -> None:
             ws = spreadsheet.worksheet(tab)
             header = ws.row_values(1)
             if header != COLUMNS:
-                logger.info("Writing header row to tab: %s", tab)
-                ws.insert_row(COLUMNS, index=1, value_input_option="RAW")
+                logger.info("Updating header row in tab: %s", tab)
+                if len(header) < len(COLUMNS):
+                    ws.add_cols(len(COLUMNS) - len(header))
+                ws.update(f"A1:{_col_to_a1(len(COLUMNS))}1", [COLUMNS], value_input_option="RAW")
 
 
 def get_existing_slugs(spreadsheet: gspread.Spreadsheet, tab: str) -> set[str]:
@@ -123,3 +133,171 @@ def test_connection(spreadsheet: gspread.Spreadsheet) -> None:
     # Restore header
     ws.update_cell(1, 1, COLUMNS[0])
     logger.info("Restored header in '%s'!A1.", ws.title)
+
+
+def _col_to_a1(col_idx_1based: int) -> str:
+    n = col_idx_1based
+    s = ""
+    while n > 0:
+        n, r = divmod(n - 1, 26)
+        s = chr(65 + r) + s
+    return s
+
+
+def _ensure_columns(ws: gspread.Worksheet, required_columns: list[str]) -> list[str]:
+    header = ws.row_values(1)
+    if not header:
+        if ws.col_count < len(required_columns):
+            ws.add_cols(len(required_columns) - ws.col_count)
+        ws.update(f"A1:{_col_to_a1(len(required_columns))}1", [required_columns], value_input_option="RAW")
+        return required_columns
+
+    merged = list(header)
+    for col in required_columns:
+        if col not in merged:
+            merged.append(col)
+
+    if ws.col_count < len(merged):
+        ws.add_cols(len(merged) - ws.col_count)
+
+    if merged != header:
+        ws.update(f"A1:{_col_to_a1(len(merged))}1", [merged], value_input_option="RAW")
+    return merged
+
+
+def _slug_to_title(slug: str) -> str:
+    if not slug:
+        return ""
+    return " ".join(part.capitalize() for part in slug.replace("_", "-").split("-") if part)
+
+
+def _cf_url_from_slug(slug: str) -> str:
+    return f"https://www.creativefabrica.com/product/{slug}/" if slug else ""
+
+
+def _affiliate_url_from_slug(slug: str) -> str:
+    if not slug:
+        return ""
+    return AFFILIATE_URL_TEMPLATE.format(slug=slug, affiliate_id=CF_AFFILIATE_ID)
+
+
+def _default_publish_status(mode: str, status: str) -> str:
+    if status != "generated" or mode == "reject_mode":
+        return "rejected"
+    return "ready"
+
+
+def upsert_auto_pin_report(
+    spreadsheet: gspread.Spreadsheet,
+    tab: str,
+    report_path: str | Path,
+) -> tuple[int, int]:
+    """
+    Upsert auto-pin results into a tab by `slug`.
+    Returns (inserted_count, updated_count).
+    """
+    ws = spreadsheet.worksheet(tab)
+    required = COLUMNS + [
+        "pin_path",
+        "mode",
+        "template_used",
+        "hook_enabled",
+        "hook_text",
+        "publish_status",
+        "published_at",
+        "error_reason",
+    ]
+    header = _ensure_columns(ws, required)
+    col = {name: i + 1 for i, name in enumerate(header)}
+
+    raw = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    items = raw.get("items", [])
+    if not items:
+        return 0, 0
+
+    slug_col = col["slug"]
+    slug_values = ws.col_values(slug_col)
+    slug_to_row: dict[str, int] = {}
+    for idx, value in enumerate(slug_values[1:], start=2):
+        v = value.strip()
+        if v and v not in slug_to_row:
+            slug_to_row[v] = idx
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    inserted = 0
+    updated = 0
+    next_row = max(2, len(slug_values) + 1)
+
+    for item in items:
+        source_file = item.get("source_file", "")
+        slug = Path(source_file).stem
+        if not slug:
+            continue
+        mode = item.get("mode", "")
+        status = item.get("status", "")
+        reject_reason = item.get("reject_reason", "")
+        pin_path = item.get("pin_jpg") or item.get("pin_png") or ""
+        hook_enabled = "TRUE" if bool(item.get("hook_enabled", False)) else "FALSE"
+
+        meta_path = item.get("meta_json", "")
+        hook_text = ""
+        if meta_path and Path(meta_path).exists():
+            try:
+                meta = json.loads(Path(meta_path).read_text(encoding="utf-8"))
+                hook_text = str(meta.get("hook_text", "")).strip()
+            except Exception:
+                hook_text = ""
+
+        row_map = {
+            "title": _slug_to_title(slug),
+            "image_url": "",
+            "cf_url": _cf_url_from_slug(slug),
+            "affiliate_url": _affiliate_url_from_slug(slug),
+            "slug": slug,
+            "posted": "FALSE",
+            "pin_id": "",
+            "created_at": now,
+            "pin_path": pin_path,
+            "mode": mode,
+            "template_used": item.get("template_used", ""),
+            "hook_enabled": hook_enabled,
+            "hook_text": hook_text,
+            "publish_status": _default_publish_status(mode=mode, status=status),
+            "published_at": "",
+            "error_reason": reject_reason,
+        }
+
+        if slug in slug_to_row:
+            row_idx = slug_to_row[slug]
+            existing = ws.row_values(row_idx)
+            # Preserve existing core values if already present.
+            def get_existing(name: str) -> str:
+                c = col.get(name)
+                if not c:
+                    return ""
+                pos = c - 1
+                return existing[pos] if pos < len(existing) else ""
+
+            for keep_col in ["title", "image_url", "cf_url", "affiliate_url", "posted", "pin_id", "created_at", "published_at"]:
+                ex = get_existing(keep_col).strip()
+                if ex:
+                    row_map[keep_col] = ex
+
+            if get_existing("posted").strip().upper() == "TRUE":
+                row_map["publish_status"] = "published"
+
+            row_values = [row_map.get(name, get_existing(name)) for name in header]
+            ws.update(
+                f"A{row_idx}:{_col_to_a1(len(header))}{row_idx}",
+                [row_values],
+                value_input_option="RAW",
+            )
+            updated += 1
+        else:
+            row_values = [row_map.get(name, "") for name in header]
+            ws.append_row(row_values, value_input_option="RAW")
+            inserted += 1
+            slug_to_row[slug] = next_row
+            next_row += 1
+
+    return inserted, updated

@@ -18,6 +18,7 @@ Examples:
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 from config import CATEGORIES
 from auto_pin_pipeline import run_auto_pin_batch
@@ -26,7 +27,7 @@ from extractor import run_batch
 from font_generator import generate_font_asset, GEN_MODES
 from font_publish_pipeline import run_publish_batch
 from parser import parse_category
-from sheets import append_products, ensure_tabs, get_sheet_client, test_connection
+from sheets import append_products, ensure_tabs, get_sheet_client, test_connection, upsert_auto_pin_report
 
 logging.basicConfig(
     level=logging.INFO,
@@ -230,6 +231,21 @@ def cmd_auto_pin(input_path: str, output_root: str):
     logger.info("[OK] Auto-pin processed: %d | generated: %d | rejected: %d", len(results), gen, rej)
 
 
+def cmd_sync_auto_pin(report_path: str, tab: str):
+    """Sync auto-pin batch report into Google Sheet tab (upsert by slug)."""
+    logger.info("Mode: sync auto-pin to sheet")
+    logger.info("Report: %s", report_path)
+    logger.info("Tab: %s", tab)
+    rp = Path(report_path)
+    if not rp.exists():
+        raise FileNotFoundError(f"Report not found: {rp}")
+
+    spreadsheet = get_sheet_client()
+    ensure_tabs(spreadsheet)
+    inserted, updated = upsert_auto_pin_report(spreadsheet=spreadsheet, tab=tab, report_path=rp)
+    logger.info("[OK] Sheet sync complete | inserted: %d | updated: %d", inserted, updated)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="CF Pinterest Parser - quick launcher",
@@ -243,6 +259,7 @@ Commands:
   generate-font  Generate font wordmark asset (signature-lock/full-regen scaffold)
   publish-fonts  Build publish-ready images (overlay + unique background)
   auto-pin  Full automatic pin pipeline (bbox/mode/layout + pin/meta)
+  sync-auto-pin  Upsert auto-pin report to Google Sheet by slug
 
 Examples:
   python run.py parse                          # all, 3 pages
@@ -252,6 +269,7 @@ Examples:
   python run.py generate-font --input ./preview.jpg --font-name \"Amore\" --category wedding
   python run.py publish-fonts --input ./test/extractor/input --output ./output --category fonts
   python run.py auto-pin --input ./test/extractor/input --output ./output
+  python run.py sync-auto-pin --report ./test/extractor/output/_reports/auto_pin_batch_report.json --tab fonts
         """,
     )
 
@@ -343,6 +361,20 @@ Examples:
         default="output",
         help="Output root folder (default: output)",
     )
+    p_sync = subparsers.add_parser("sync-auto-pin", help="Sync auto-pin batch report to Google Sheet")
+    p_sync.add_argument(
+        "--report",
+        "-r",
+        default="./test/extractor/output/_reports/auto_pin_batch_report.json",
+        help="Path to auto_pin_batch_report.json",
+    )
+    p_sync.add_argument(
+        "--tab",
+        "-t",
+        default="fonts",
+        choices=list(CATEGORIES.keys()),
+        help="Sheet tab/category (default: fonts)",
+    )
 
     args = parser.parse_args()
 
@@ -373,6 +405,8 @@ Examples:
         )
     elif args.command == "auto-pin":
         cmd_auto_pin(input_path=args.input, output_root=args.output)
+    elif args.command == "sync-auto-pin":
+        cmd_sync_auto_pin(report_path=args.report, tab=args.tab)
     else:
         parser.print_help()
         sys.exit(1)
