@@ -1,6 +1,7 @@
 import json
 import logging
 import mimetypes
+import ssl
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,7 +51,8 @@ def _download_preview(product: dict, input_dir: Path) -> Path | None:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        context = ssl._create_unverified_context()
+        with urllib.request.urlopen(req, timeout=30, context=context) as resp:
             content = resp.read()
             suffix = _guess_suffix(url, resp.headers.get("Content-Type", ""))
     except Exception as exc:

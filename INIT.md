@@ -30,6 +30,13 @@
 - Улучшен sync в `sheets.py`:
   - при наличии данных товара в отчёте таблица теперь получает реальные `title`, `image_url`, `cf_url`, `affiliate_url`,
   - fallback по slug остаётся только для старых/тестовых отчётов без product metadata.
+- Первый prod-run выявил локальную проблему SSL при скачивании картинок с CDN Creative Fabrica:
+  - парсер успешно нашёл `84` товара на странице fonts,
+  - первые `20` были выбраны,
+  - скачивание preview упало на `CERTIFICATE_VERIFY_FAILED`.
+- Исправление:
+  - в `prod_auto_pin_pipeline.py` downloader preview использует отдельный SSL context для CDN-картинок,
+  - остальная логика парсинга/Sheets не менялась.
 
 - Добавлена автоматическая выгрузка результатов `auto-pin` в Google Sheets (upsert по `slug`):
   - новый CLI:
