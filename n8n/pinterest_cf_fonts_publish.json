@@ -1,0 +1,447 @@
+{
+  "name": "Pinterest CF Fonts Publish",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## CF fonts: публикация\nБерёт первую строку fonts, где publish_status=ready, есть public_image_url, vds_upload_status=uploaded и posted не TRUE. Публикует pin на Pinterest и обновляет строку по slug.",
+        "height": 220,
+        "width": 360
+      },
+      "id": "dbbbca08-f2c8-45ad-8271-7b29edca6cc8",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -700,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 5,
+              "triggerAtMinute": 15
+            }
+          ]
+        }
+      },
+      "id": "ef3e35dc-a06f-4ec3-8dd9-56e8611d49e3",
+      "name": "Every 5 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -700,
+        120
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg",
+          "mode": "list",
+          "cachedResultName": "CF Pinterest",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "fonts",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "publish_status",
+              "lookupValue": "ready"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5a36a280-6ad4-4b41-a32d-e08988f862b6",
+      "name": "Get ready rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -460,
+        120
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "Ofs0HJAih2ZMwneg",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const ready = items.filter((item) => {\n  const row = item.json;\n  const posted = String(row.posted ?? '').trim().toUpperCase();\n  const status = String(row.publish_status ?? '').trim().toLowerCase();\n  const upload = String(row.vds_upload_status ?? '').trim().toLowerCase();\n  return status === 'ready'\n    && posted !== 'TRUE'\n    && upload === 'uploaded'\n    && Boolean(row.public_image_url)\n    && Boolean(row.affiliate_url)\n    && Boolean(row.slug);\n});\n\nreturn ready.slice(0, 1);\n"
+      },
+      "id": "af1ce29c-55bb-4188-b185-a4ae53b39c25",
+      "name": "Pick one publishable row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "pinBoardId": "1085930597590767480",
+        "pinTitle": "={{ ($json.hook_text || $json.title || $json.slug || 'Beautiful font').toString().slice(0, 90) }}",
+        "pinDescription": "={{ (($json.hook_text ? $json.hook_text + '. ' : '') + 'Explore this font for Cricut, crafts, branding, printable designs and creative projects.').slice(0, 450) }}",
+        "pinLink": "={{ $json.affiliate_url }}",
+        "imageUrl": "={{ $json.public_image_url }}"
+      },
+      "id": "dbd060f3-7dff-4942-9867-06ca0f45ba12",
+      "name": "Create Pinterest pin",
+      "type": "n8n-nodes-pin-interest.pinInterest",
+      "typeVersion": 1,
+      "position": [
+        40,
+        120
+      ],
+      "credentials": {
+        "pinInterestOAuth2Api": {
+          "id": "F0pxjtQAV06pJuzo",
+          "name": "Pin-Interest account"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "no_error",
+              "leftValue": "={{ $json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9e333d2e-f4a8-40fc-bd0a-51ada83e29e3",
+      "name": "Pinterest success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        280,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg",
+          "mode": "list",
+          "cachedResultName": "CF Pinterest",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "fonts",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "slug": "={{ $('Pick one publishable row').item.json.slug }}",
+            "posted": "TRUE",
+            "publish_status": "published",
+            "pin_id": "={{ $json.id || $json.pin_id || $json.pinId || $json.data?.id || '' }}",
+            "published_at": "={{ $now }}",
+            "error_reason": ""
+          },
+          "matchingColumns": [
+            "slug"
+          ],
+          "schema": [
+            {
+              "id": "slug",
+              "displayName": "slug",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "posted",
+              "displayName": "posted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "publish_status",
+              "displayName": "publish_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "pin_id",
+              "displayName": "pin_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "published_at",
+              "displayName": "published_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "error_reason",
+              "displayName": "error_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "432ee379-3d9f-499c-b210-fc9ea63455ed",
+      "name": "Mark row published",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        560,
+        20
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "Ofs0HJAih2ZMwneg",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg",
+          "mode": "list",
+          "cachedResultName": "CF Pinterest",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "fonts",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "slug": "={{ $('Pick one publishable row').item.json.slug }}",
+            "posted": "FALSE",
+            "publish_status": "failed",
+            "error_reason": "={{ $json.error?.message || $json.error || $json.message || 'unknown Pinterest error' }}"
+          },
+          "matchingColumns": [
+            "slug"
+          ],
+          "schema": [
+            {
+              "id": "slug",
+              "displayName": "slug",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "posted",
+              "displayName": "posted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "publish_status",
+              "displayName": "publish_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "error_reason",
+              "displayName": "error_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "e8a84046-bd7b-4b49-8403-93a2787db427",
+      "name": "Mark row failed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        560,
+        220
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "Ofs0HJAih2ZMwneg",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Важно\nCleanup файлов сделан отдельным workflow. Не удаляем JPG сразу после создания pin: Pinterest должен успеть забрать изображение по URL.",
+        "height": 180,
+        "width": 360
+      },
+      "id": "b84ec36f-1687-4a88-ab5b-b92ffb1a8d1d",
+      "name": "Sticky Note 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        520,
+        -220
+      ]
+    }
+  ],
+  "connections": {
+    "Every 5 hours": {
+      "main": [
+        [
+          {
+            "node": "Get ready rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get ready rows": {
+      "main": [
+        [
+          {
+            "node": "Pick one publishable row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick one publishable row": {
+      "main": [
+        [
+          {
+            "node": "Create Pinterest pin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Pinterest pin": {
+      "main": [
+        [
+          {
+            "node": "Pinterest success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pinterest success?": {
+      "main": [
+        [
+          {
+            "node": "Mark row published",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark row failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Moscow",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "active": false,
+  "versionId": "6885ad27-f75f-4f48-8fc8-18b25dca66a6",
+  "id": "6d19ba79-9da3-45",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2b615a4ee9dcb4fb69a3233f53ddc1715da07a2d4a50e08b96754c796cdf17ea"
+  },
+  "tags": []
+}

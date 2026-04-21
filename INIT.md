@@ -18,6 +18,29 @@
 
 ## Изменения 2026-04-21
 
+- Добавлены импортируемые n8n workflow для публикации fonts-пинов с VDS:
+  - `n8n/pinterest_cf_fonts_publish.json`
+  - `n8n/pinterest_cf_fonts_cleanup.json`
+- `Pinterest CF Fonts Publish`:
+  - запускается раз в 5 часов,
+  - читает вкладку `fonts` в Google Sheet,
+  - берёт первую строку с `publish_status=ready`, `vds_upload_status=uploaded`, `posted != TRUE`, заполненными `public_image_url`, `affiliate_url`, `slug`,
+  - создаёт Pinterest pin через уже существующий Pinterest credential/board из старого workflow,
+  - картинку берёт из `public_image_url`,
+  - ссылку клика ставит на `affiliate_url`,
+  - после успеха обновляет строку по `slug`: `posted=TRUE`, `publish_status=published`, `pin_id`, `published_at`,
+  - после ошибки обновляет строку по `slug`: `posted=FALSE`, `publish_status=failed`, `error_reason`.
+- `Pinterest CF Fonts Cleanup`:
+  - запускается раз в час,
+  - берёт опубликованные строки,
+  - ждёт минимум 30 минут после `published_at`,
+  - удаляет файл только если `remote_image_path` начинается с `/var/www/html/pins/ready/`,
+  - после удаления ставит `cleanup_status=deleted`, `cleanup_at`,
+  - при ошибке ставит `cleanup_status=delete_failed`.
+- Важно по архитектуре n8n:
+  - публикация и удаление файлов разделены специально, чтобы Pinterest успевал скачать JPG с VDS,
+  - старый `/Users/nick/Downloads/Pinterest.json` не перезаписывался, новые workflow лежат отдельно в проекте.
+
 - Подготовлен VDS upload слой для автономной публикации через n8n:
   - `prod-auto-pin` получил флаг:
     - `--upload-vds`
