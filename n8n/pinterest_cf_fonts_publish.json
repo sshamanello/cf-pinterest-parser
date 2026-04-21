@@ -94,8 +94,8 @@
     {
       "parameters": {
         "pinBoardId": "1085930597590767480",
-        "pinTitle": "={{ ($json.hook_text || $json.title || $json.slug || 'Beautiful font').toString().slice(0, 90) }}",
-        "pinDescription": "={{ (($json.hook_text ? $json.hook_text + '. ' : '') + 'Explore this font for Cricut, crafts, branding, printable designs and creative projects.').slice(0, 450) }}",
+        "pinTitle": "={{ ($json.hook_text || (($json.title || $json.slug || 'Beautiful Font') + ' for Cricut & Crafts')).toString().slice(0, 90) }}",
+        "pinDescription": "={{ (($json.hook_text ? $json.hook_text + '. ' : '') + 'Discover ' + ($json.title || $json.slug || 'this font') + ' for Cricut projects, SVG designs, sublimation, printables, branding, invitations, stickers and creative business products. Save this pin for font inspiration and open the link to view the full font preview and download page.').slice(0, 500) }}",
         "pinLink": "={{ $json.affiliate_url }}",
         "imageUrl": "={{ $json.public_image_url }}"
       },

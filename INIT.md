@@ -28,6 +28,8 @@
   - создаёт Pinterest pin через уже существующий Pinterest credential/board из старого workflow,
   - картинку берёт из `public_image_url`,
   - ссылку клика ставит на `affiliate_url`,
+  - заголовок pin берётся из `hook_text`; если hook пустой, fallback: `<title> for Cricut & Crafts`,
+  - описание pin расширено SEO-текстом про Cricut, SVG, sublimation, printables, branding, invitations, stickers и download page,
   - после успеха обновляет строку по `slug`: `posted=TRUE`, `publish_status=published`, `pin_id`, `published_at`,
   - после ошибки обновляет строку по `slug`: `posted=FALSE`, `publish_status=failed`, `error_reason`.
 - `Pinterest CF Fonts Cleanup`:
