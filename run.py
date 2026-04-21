@@ -27,7 +27,7 @@ from extractor import run_batch
 from font_generator import generate_font_asset, GEN_MODES
 from font_publish_pipeline import run_publish_batch
 from parser import parse_category
-from prod_auto_pin_pipeline import run_prod_auto_pin
+from prod_auto_pin_pipeline import run_prod_auto_pin, upload_report_pins_to_vds
 from sheets import append_products, ensure_tabs, get_sheet_client, test_connection, upsert_auto_pin_report
 
 logging.basicConfig(
@@ -247,21 +247,28 @@ def cmd_sync_auto_pin(report_path: str, tab: str):
     logger.info("[OK] Sheet sync complete | inserted: %d | updated: %d", inserted, updated)
 
 
-def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync_sheet: bool):
+def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync_sheet: bool, upload_vds: bool):
     """Production flow: parse products, download previews, generate pins, optionally sync sheet."""
     logger.info("Mode: prod auto-pin")
     logger.info("Niche: %s", niche)
     logger.info("Limit: %d", limit)
     logger.info("Output root: %s", output_root)
 
-    result = run_prod_auto_pin(niche=niche, limit=limit, output_root=output_root, pages=pages)
+    result = run_prod_auto_pin(
+        niche=niche,
+        limit=limit,
+        output_root=output_root,
+        pages=pages,
+        upload_vds=upload_vds,
+    )
     logger.info(
-        "[OK] Prod auto-pin | parsed: %d | selected: %d | downloaded: %d | generated: %d | rejected: %d",
+        "[OK] Prod auto-pin | parsed: %d | selected: %d | downloaded: %d | generated: %d | rejected: %d | uploaded: %d",
         result.parsed_count,
         result.selected_count,
         result.downloaded_count,
         result.generated_count,
         result.rejected_count,
+        result.uploaded_count,
     )
     logger.info("Report: %s", result.report_path)
 
@@ -272,6 +279,24 @@ def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync
             spreadsheet=spreadsheet,
             tab=niche,
             report_path=result.report_path,
+        )
+        logger.info("[OK] Sheet sync complete | inserted: %d | updated: %d", inserted, updated)
+
+
+def cmd_upload_vds(report_path: str, sync_sheet: bool, tab: str):
+    """Upload generated pin jpg files from an existing auto-pin report to VDS."""
+    logger.info("Mode: upload VDS")
+    logger.info("Report: %s", report_path)
+    uploaded = upload_report_pins_to_vds(report_path)
+    logger.info("[OK] VDS upload complete | uploaded: %d", uploaded)
+
+    if sync_sheet:
+        spreadsheet = get_sheet_client()
+        ensure_tabs(spreadsheet)
+        inserted, updated = upsert_auto_pin_report(
+            spreadsheet=spreadsheet,
+            tab=tab,
+            report_path=report_path,
         )
         logger.info("[OK] Sheet sync complete | inserted: %d | updated: %d", inserted, updated)
 
@@ -291,6 +316,7 @@ Commands:
   auto-pin  Full automatic pin pipeline (bbox/mode/layout + pin/meta)
   sync-auto-pin  Upsert auto-pin report to Google Sheet by slug
   prod-auto-pin  Parse first products, generate prod pins, optionally sync Sheet
+  upload-vds  Upload generated pin jpg files from report to VDS
 
 Examples:
   python run.py parse                          # all, 3 pages
@@ -302,6 +328,7 @@ Examples:
   python run.py auto-pin --input ./test/extractor/input --output ./output
   python run.py sync-auto-pin --report ./test/extractor/output/_reports/auto_pin_batch_report.json --tab fonts
   python run.py prod-auto-pin --niche fonts --limit 20 --sync-sheet
+  python run.py upload-vds --report ./output/prod/fonts/_reports/auto_pin_batch_report.json --sync-sheet
         """,
     )
 
@@ -413,6 +440,22 @@ Examples:
     p_prod.add_argument("--pages", "-p", type=int, default=1, help="How many category pages to parse (default: 1)")
     p_prod.add_argument("--output", "-o", default="output/prod/fonts", help="Production output root")
     p_prod.add_argument("--sync-sheet", action="store_true", help="Sync generated prod report to Google Sheet")
+    p_prod.add_argument("--upload-vds", action="store_true", help="Upload generated pin_01.jpg files to VDS before Sheet sync")
+    p_upload = subparsers.add_parser("upload-vds", help="Upload generated pin jpg files from a report to VDS")
+    p_upload.add_argument(
+        "--report",
+        "-r",
+        default="./output/prod/fonts/_reports/auto_pin_batch_report.json",
+        help="Path to auto_pin_batch_report.json",
+    )
+    p_upload.add_argument("--sync-sheet", action="store_true", help="Sync report to Google Sheet after upload")
+    p_upload.add_argument(
+        "--tab",
+        "-t",
+        default="fonts",
+        choices=list(CATEGORIES.keys()),
+        help="Sheet tab/category (default: fonts)",
+    )
 
     args = parser.parse_args()
 
@@ -452,7 +495,10 @@ Examples:
             output_root=args.output,
             pages=args.pages,
             sync_sheet=args.sync_sheet,
+            upload_vds=args.upload_vds,
         )
+    elif args.command == "upload-vds":
+        cmd_upload_vds(report_path=args.report, sync_sheet=args.sync_sheet, tab=args.tab)
     else:
         parser.print_help()
         sys.exit(1)

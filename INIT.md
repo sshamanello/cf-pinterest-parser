@@ -18,6 +18,41 @@
 
 ## Изменения 2026-04-21
 
+- Подготовлен VDS upload слой для автономной публикации через n8n:
+  - `prod-auto-pin` получил флаг:
+    - `--upload-vds`
+  - добавлена отдельная команда для уже готового отчёта:
+    - `python3 run.py upload-vds --report ./output/prod/fonts/_reports/auto_pin_batch_report.json --sync-sheet`
+  - загружается только `pin_01.jpg`, без `.png`, исходников и meta, чтобы экономить диск VDS.
+- VDS upload использует env-переменные:
+  - `VDS_SSH_HOST`
+  - `VDS_SSH_USER`
+  - `VDS_SSH_PORT` (default `22`)
+  - `VDS_SSH_PASSWORD` (optional; требует `sshpass`, если используется пароль)
+  - `VDS_REMOTE_DIR` (default `/var/www/pins/ready`)
+  - `VDS_PUBLIC_BASE_URL` (например `https://domain.com/pins/ready`)
+  - шаблон добавлен в `.env.example`.
+- После upload в `auto_pin_batch_report.json` пишутся:
+  - `public_image_url`
+  - `remote_image_path`
+  - `vds_upload_status`
+  - `uploaded_at`
+  - `cleanup_status`
+  - `upload_error` при ошибке.
+- Google Sheets sync расширен новыми колонками:
+  - `public_image_url`
+  - `remote_image_path`
+  - `vds_upload_status`
+  - `uploaded_at`
+  - `cleanup_status`
+  - `cleanup_at`
+  - если upload был запрошен, но не удался, `publish_status` становится `upload_failed`.
+- План хранения на VDS с текущим диском `8.4 / 10 GB`:
+  - держать только JPG,
+  - стартовать с очереди до `100` файлов,
+  - n8n публикует по `public_image_url`,
+  - cleanup удаляет или переносит опубликованные файлы после задержки.
+
 - Выполнен первый успешный продовый прогон `prod-auto-pin` на fonts:
   - команда:
     - `python3 run.py prod-auto-pin --niche fonts --limit 20 --output ./output/prod/fonts --sync-sheet`

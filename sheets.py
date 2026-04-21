@@ -206,6 +206,12 @@ def upsert_auto_pin_report(
         "publish_status",
         "published_at",
         "error_reason",
+        "public_image_url",
+        "remote_image_path",
+        "vds_upload_status",
+        "uploaded_at",
+        "cleanup_status",
+        "cleanup_at",
     ]
     header = _ensure_columns(ws, required)
     col = {name: i + 1 for i, name in enumerate(header)}
@@ -265,7 +271,17 @@ def upsert_auto_pin_report(
             "publish_status": _default_publish_status(mode=mode, status=status),
             "published_at": "",
             "error_reason": reject_reason,
+            "public_image_url": item.get("public_image_url", ""),
+            "remote_image_path": item.get("remote_image_path", ""),
+            "vds_upload_status": item.get("vds_upload_status", ""),
+            "uploaded_at": item.get("uploaded_at", ""),
+            "cleanup_status": item.get("cleanup_status", ""),
+            "cleanup_at": "",
         }
+
+        if item.get("vds_upload_status") and item.get("vds_upload_status") != "uploaded":
+            row_map["publish_status"] = "upload_failed"
+            row_map["error_reason"] = item.get("upload_error", reject_reason)
 
         if slug in slug_to_row:
             row_idx = slug_to_row[slug]
