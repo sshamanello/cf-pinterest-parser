@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import mimetypes
+import shlex
+import shutil
 import ssl
 import subprocess
 import time
@@ -98,22 +100,56 @@ def _vds_ready() -> bool:
 
 def _ssh_base_cmd() -> list[str]:
     cmd = ["ssh", "-p", str(VDS_SSH_PORT), "-o", "StrictHostKeyChecking=accept-new"]
-    if VDS_SSH_PASSWORD:
-        cmd = ["sshpass", "-p", VDS_SSH_PASSWORD] + cmd
     return cmd
 
 
 def _scp_base_cmd() -> list[str]:
     cmd = ["scp", "-P", str(VDS_SSH_PORT), "-o", "StrictHostKeyChecking=accept-new"]
-    if VDS_SSH_PASSWORD:
-        cmd = ["sshpass", "-p", VDS_SSH_PASSWORD] + cmd
     return cmd
+
+
+def _run_password_aware(cmd: list[str]) -> subprocess.CompletedProcess:
+    if not VDS_SSH_PASSWORD:
+        return subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+    if shutil.which("sshpass"):
+        return subprocess.run(
+            ["sshpass", "-p", VDS_SSH_PASSWORD] + cmd,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    if not shutil.which("expect"):
+        raise RuntimeError("password auth requires sshpass or expect")
+
+    spawn_cmd = " ".join(shlex.quote(part) for part in cmd)
+    script = f"""
+set timeout -1
+spawn {spawn_cmd}
+expect {{
+    -re ".*yes/no.*" {{ send "yes\\r"; exp_continue }}
+    -re ".*password:.*" {{ send "$env(VDS_SSH_PASSWORD)\\r"; exp_continue }}
+    eof
+}}
+catch wait result
+exit [lindex $result 3]
+"""
+    env = dict(os.environ)
+    env["VDS_SSH_PASSWORD"] = VDS_SSH_PASSWORD
+    return subprocess.run(
+        ["expect", "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
 
 
 def _run_remote_mkdir() -> None:
     target = f"{VDS_SSH_USER}@{VDS_SSH_HOST}"
     cmd = _ssh_base_cmd() + [target, f"mkdir -p {VDS_REMOTE_DIR}"]
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    _run_password_aware(cmd)
 
 
 def _upload_file_to_vds(local_path: Path, slug: str) -> dict:
@@ -122,15 +158,6 @@ def _upload_file_to_vds(local_path: Path, slug: str) -> dict:
             "vds_upload_status": "skipped",
             "upload_error": "missing_vds_env",
         }
-    if VDS_SSH_PASSWORD:
-        try:
-            subprocess.run(["sshpass", "-V"], check=True, capture_output=True, text=True)
-        except Exception:
-            return {
-                "vds_upload_status": "failed",
-                "upload_error": "sshpass_not_installed_for_password_auth",
-            }
-
     digest = local_path.read_bytes()
     import hashlib
 
@@ -143,7 +170,7 @@ def _upload_file_to_vds(local_path: Path, slug: str) -> dict:
     try:
         _run_remote_mkdir()
         cmd = _scp_base_cmd() + [str(local_path), target]
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+        _run_password_aware(cmd)
     except Exception as exc:
         return {
             "vds_upload_status": "failed",

@@ -32,6 +32,12 @@
   - `VDS_REMOTE_DIR` (default `/var/www/pins/ready`)
   - `VDS_PUBLIC_BASE_URL` (например `https://domain.com/pins/ready`)
   - шаблон добавлен в `.env.example`.
+- Для password-based SSH/SCP на Mac добавлена поддержка системного `expect`:
+  - если `sshpass` установлен, используется `sshpass`,
+  - если `sshpass` отсутствует, используется `/usr/bin/expect`,
+  - это важно для текущего Mac, где `sshpass` не установлен.
+- Так как домена для VDS пока нет, для текущей загрузки используем public base через IP:
+  - `http://87.120.219.4/pins/ready`
 - После upload в `auto_pin_batch_report.json` пишутся:
   - `public_image_url`
   - `remote_image_path`
