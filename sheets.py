@@ -221,10 +221,10 @@ def upsert_auto_pin_report(
     if not items:
         return 0, 0
 
-    slug_col = col["slug"]
-    slug_values = ws.col_values(slug_col)
+    all_values = ws.get_all_values()
     slug_to_row: dict[str, int] = {}
-    for idx, value in enumerate(slug_values[1:], start=2):
+    for idx, row in enumerate(all_values[1:], start=2):
+        value = row[col["slug"] - 1] if len(row) >= col["slug"] else ""
         v = value.strip()
         if v and v not in slug_to_row:
             slug_to_row[v] = idx
@@ -232,7 +232,9 @@ def upsert_auto_pin_report(
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     inserted = 0
     updated = 0
-    next_row = max(2, len(slug_values) + 1)
+    next_row = max(2, len(all_values) + 1)
+    updates: list[dict] = []
+    rows_to_append: list[list] = []
 
     for item in items:
         source_file = item.get("source_file", "")
@@ -285,7 +287,7 @@ def upsert_auto_pin_report(
 
         if slug in slug_to_row:
             row_idx = slug_to_row[slug]
-            existing = ws.row_values(row_idx)
+            existing = all_values[row_idx - 1] if row_idx - 1 < len(all_values) else []
             # Preserve existing core values if already present.
             def get_existing(name: str) -> str:
                 c = col.get(name)
@@ -303,17 +305,23 @@ def upsert_auto_pin_report(
                 row_map["publish_status"] = "published"
 
             row_values = [row_map.get(name, get_existing(name)) for name in header]
-            ws.update(
-                f"A{row_idx}:{_col_to_a1(len(header))}{row_idx}",
-                [row_values],
-                value_input_option="RAW",
+            updates.append(
+                {
+                    "range": f"A{row_idx}:{_col_to_a1(len(header))}{row_idx}",
+                    "values": [row_values],
+                }
             )
             updated += 1
         else:
             row_values = [row_map.get(name, "") for name in header]
-            ws.append_row(row_values, value_input_option="RAW")
+            rows_to_append.append(row_values)
             inserted += 1
             slug_to_row[slug] = next_row
             next_row += 1
+
+    if updates:
+        ws.batch_update(updates, value_input_option="RAW")
+    if rows_to_append:
+        ws.append_rows(rows_to_append, value_input_option="RAW")
 
     return inserted, updated

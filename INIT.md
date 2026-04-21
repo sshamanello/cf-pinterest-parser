@@ -53,6 +53,9 @@
   - `cleanup_status`
   - `cleanup_at`
   - если upload был запрошен, но не удался, `publish_status` становится `upload_failed`.
+- После загрузки пачки 100 на VDS Google Sheets sync упёрся в лимит read requests:
+  - причина: старая реализация читала каждую строку отдельно через `row_values`,
+  - исправлено: `upsert_auto_pin_report` делает один bulk-read `get_all_values`, потом `batch_update` и `append_rows`.
 - План хранения на VDS с текущим диском `8.4 / 10 GB`:
   - держать только JPG,
   - стартовать с очереди до `100` файлов,
