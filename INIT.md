@@ -56,6 +56,14 @@
 - После загрузки пачки 100 на VDS Google Sheets sync упёрся в лимит read requests:
   - причина: старая реализация читала каждую строку отдельно через `row_values`,
   - исправлено: `upsert_auto_pin_report` делает один bulk-read `get_all_values`, потом `batch_update` и `append_rows`.
+- Финальный результат пачки 100 без повторного парсинга:
+  - локально обработано `100` файлов из `output/prod/fonts_100/_input`,
+  - `generated=94`,
+  - `rejected=6`,
+  - на VDS загружено `94` JPG,
+  - публичная проверка URL дала `HTTP/1.1 200 OK`,
+  - на VDS в `/var/www/html/pins/ready` сейчас `101` JPG / примерно `40 MB`,
+  - Google Sheet sync после batch-read фикса: `inserted=16`, `updated=84`.
 - План хранения на VDS с текущим диском `8.4 / 10 GB`:
   - держать только JPG,
   - стартовать с очереди до `100` файлов,
