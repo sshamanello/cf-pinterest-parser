@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 PINTEREST_PKG = "com.pinterest"
 PIN_CELL_ID = "com.pinterest:id/lego_pin_grid_cell_id"
 BOARD_PICKER_ID = "com.pinterest:id/board_section_picker_board_cell"
+MIN_SESSION_SECONDS = 45.0
+MAX_SESSION_SECONDS = 80.0
 
 
 @dataclass
@@ -115,6 +117,19 @@ def _click_first_available(
             node.click()
             return True
     return False
+
+
+def _first_existing(
+    *nodes,
+    timeout: float = 1.0,
+):
+    for node in nodes:
+        try:
+            if node.exists(timeout=timeout):
+                return node
+        except Exception:
+            continue
+    return None
 
 
 def _tap_random_visible_pin(d: u2.Device) -> bool:
@@ -223,6 +238,34 @@ def _feed_browse_step(d: u2.Device, session: WarmupSession) -> None:
             continue
 
 
+def _ensure_home_feed(d: u2.Device) -> None:
+    home = d(resourceId="com.pinterest:id/bottom_nav_home_icon")
+    if home.exists(timeout=2):
+        home.click()
+        _human_sleep(0.8, 1.8, mu=1.2)
+
+
+def _extend_session_if_needed(d: u2.Device, session: WarmupSession, started_at: float) -> None:
+    """Guarantee that warmup is not visually too short on the phone."""
+    target_duration = _clamped_gauss(
+        mu=57.0,
+        sigma=9.0,
+        min_value=MIN_SESSION_SECONDS,
+        max_value=MAX_SESSION_SECONDS,
+    )
+    elapsed = time.time() - started_at
+    if elapsed >= target_duration:
+        return
+
+    logger.info("Extending session to %.1fs total (elapsed %.1fs)", target_duration, elapsed)
+    _ensure_home_feed(d)
+
+    while (time.time() - started_at) < target_duration:
+        _feed_browse_step(d, session)
+        if random.random() < 0.18:
+            break
+
+
 def _open_app(d: u2.Device) -> bool:
     d.screen_on()
     d.shell("input keyevent 82")
@@ -304,8 +347,13 @@ def _scenario_search(d: u2.Device, session: WarmupSession) -> None:
     d(resourceId="com.pinterest:id/menu_search").click()
     _human_sleep(1.0, 2.0, mu=1.4)
 
-    search_box = d(resourceId="com.pinterest:id/search_bar_text") or d(hint="Search") or d(hintText="Поиск")
-    if not search_box.exists(timeout=4):
+    search_box = _first_existing(
+        d(resourceId="com.pinterest:id/search_bar_text"),
+        d(resourceId="com.pinterest:id/search_src_text"),
+        d(className="android.widget.EditText"),
+        timeout=4,
+    )
+    if search_box is None:
         d.press("back")
         return
     search_box.click()
@@ -351,6 +399,7 @@ def warmup_device_sync(serial: str) -> bool:
     """Run one warmup session on the given device. Returns True on success."""
     d = u2.connect(serial)
     session = WarmupSession(follow_enabled=(random.random() < 0.13))
+    started_at = time.time()
 
     if not _open_app(d):
         logger.error("[%s] Could not open Pinterest", serial)
@@ -367,6 +416,7 @@ def warmup_device_sync(serial: str) -> bool:
 
     try:
         scenario_fn(d, session)
+        _extend_session_if_needed(d, session, started_at)
         logger.info("[%s] ✓ Warmup complete | follow_enabled=%s follow_done=%s",
                     serial, session.follow_enabled, session.follow_done)
         return True
@@ -374,4 +424,7 @@ def warmup_device_sync(serial: str) -> bool:
         logger.error("[%s] Warmup failed: %s", serial, e)
         return False
     finally:
-        d.app_stop(PINTEREST_PKG)
+        try:
+            d.press("home")
+        except Exception:
+            pass
