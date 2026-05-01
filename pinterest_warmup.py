@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
 
-# Warmup task templates — pick one randomly each session
 _WARMUP_TASKS = [
     (
         "Open the Pinterest app. Scroll through the home feed slowly, as a real person would. "
@@ -33,57 +32,50 @@ _WARMUP_TASKS = [
     ),
     (
         "Open Pinterest. Scroll the home feed slowly. "
-        "Like (react to) 2-3 pins. Save 1 pin to a board. "
-        "Scroll a bit more, then close the app naturally."
+        "Save 1 pin to a board. Scroll a bit more, then close the app naturally."
     ),
 ]
 
 
-async def warmup_device(serial: str, duration_minutes: int = 5) -> bool:
+async def warmup_device(serial: str) -> bool:
     """
     Run a warmup session on the given device using DroidRun + Ollama.
     Returns True on success.
     """
     try:
-        from droidrun.agent import DroidAgent
-        from droidrun.tools import ADBTools
+        import droidrun
     except ImportError:
-        logger.error("droidrun not installed. Run: pip install droidrun")
+        logger.error("droidrun not installed. Run: pip install droidrun==0.4.26")
         return False
 
-    task = random.choice(_WARMUP_TASKS)
-    logger.info("[%s] Starting warmup session (~%d min)", serial, duration_minutes)
-    logger.info("[%s] Task: %s", serial, task[:80] + "...")
+    goal = random.choice(_WARMUP_TASKS)
+    logger.info("[%s] Starting warmup | goal: %s", serial, goal[:80] + "...")
 
     try:
-        from langchain_ollama import ChatOllama
-        llm = ChatOllama(
-            base_url=OLLAMA_URL,
+        llm = droidrun.load_llm(
+            "ollama",
             model=OLLAMA_MODEL,
-            temperature=0.7,
+            base_url=OLLAMA_URL,
         )
-    except ImportError:
-        # Fallback: try droidrun's built-in Ollama support
-        from droidrun.llm import get_llm
-        llm = get_llm(provider="ollama", model=OLLAMA_MODEL, base_url=OLLAMA_URL)
 
-    tools = ADBTools(device_serial=serial)
-    agent = DroidAgent(
-        task=task,
-        adb_tools=tools,
-        llm=llm,
-        use_screenshot=False,  # accessibility tree only — no vision model needed
-        max_steps=30,
-    )
+        tools = droidrun.AdbTools(
+            serial=serial,
+            vision_enabled=False,  # accessibility tree only — no vision model needed
+        )
 
-    try:
+        agent = droidrun.DroidAgent(
+            goal=goal,
+            llms=[llm],
+            tools=tools,
+        )
+
         await agent.run()
-        logger.info("[%s] ✓ Warmup session complete", serial)
+        logger.info("[%s] ✓ Warmup complete", serial)
         return True
     except Exception as e:
         logger.error("[%s] Warmup failed: %s", serial, e)
         return False
 
 
-def warmup_device_sync(serial: str, duration_minutes: int = 5) -> bool:
-    return asyncio.run(warmup_device(serial, duration_minutes))
+def warmup_device_sync(serial: str) -> bool:
+    return asyncio.run(warmup_device(serial))
