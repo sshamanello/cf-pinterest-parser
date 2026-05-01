@@ -20,6 +20,43 @@
 
 ## Изменения 2026-05-01
 
+- Поднят первый Linux-сервер для `feature/android-phone-automation`:
+  - проект развёрнут в `/home/nick/cf-pinterest-parser`,
+  - используется `python3.11` + `.venv`,
+  - установлены server-side зависимости для phone automation:
+    - `adb`
+    - `python3-venv`
+    - `python-dotenv`
+    - `requests`
+    - `gspread`
+    - `google-auth`
+    - `uiautomator2`
+- Для автономного запуска scheduler настроен `systemd`-сервис:
+  - unit: `cf-pinterest-scheduler.service`
+  - `ExecStart=/home/nick/cf-pinterest-parser/.venv/bin/python /home/nick/cf-pinterest-parser/scheduler.py`
+  - сервис включён в автозапуск (`enabled`) и находится в `active (running)`.
+- Для Android USB на Debian добавлено постоянное `udev`-правило под Xiaomi/Redmi:
+  - файл: `/etc/udev/rules.d/99-android-xiaomi.rules`
+  - vendor id: `2717`
+  - причина: устройство сначала определялось как `no permissions`, после правки перешло в нормальный ADB state.
+- Текущий серверный статус телефона:
+  - `adb devices -l` показывает `Redmi_Go` в состоянии `device`,
+  - перед этим потребовалось вручную подтвердить RSA/USB debugging на экране телефона.
+- Логи scheduler на сервере:
+  - `/home/nick/cf-pinterest-parser/logs/scheduler.log`
+- Что проверено на сервере:
+  - `scheduler.py --dry-run` считает ближайший слот,
+  - `scheduler.py --run-now --force-no-phone` корректно пишет skip без падения,
+  - `adb devices -l` видит телефон,
+  - живой `run_phones.py warmup` стартует на устройстве.
+- Важно:
+  - полный `post --tab fonts` на сервере отдельно не запускался в тестовом режиме, чтобы не публиковать реальный pin без необходимости,
+  - для ручной проверки можно запускать уже на сервере из проекта:
+    - `.venv/bin/python run_phones.py warmup`
+    - `.venv/bin/python run_phones.py post --tab fonts`
+    - `sudo systemctl status cf-pinterest-scheduler.service`
+    - `tail -f /home/nick/cf-pinterest-parser/logs/scheduler.log`
+
 - Улучшен `pinterest_warmup.py` в ветке `feature/android-phone-automation`:
   - вместо равномерных пауз `uniform()` используется gaussian-модель с отсечением по `min/max`,
   - добавлено поведение "открыть пин и почитать":
