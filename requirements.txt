@@ -11,4 +11,3 @@ google-auth==2.30.0
 python-dotenv==1.0.1
 uiautomator2>=3.0.0
 droidrun==0.4.26
-langchain-ollama>=0.1.0
