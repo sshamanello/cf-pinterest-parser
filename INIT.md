@@ -403,6 +403,93 @@
   - `effective_mode=signature_lock`,
   - `fallback_reason=comfy_timeout` (Comfy не вернул результат в таймауте).
 
+## Изменения 2026-05-01
+
+### Android phone automation (ветка `feature/android-phone-automation`)
+
+**Проблема:** n8n выдавал ошибку "The column 'publish_status' could not be found" — в Google Sheet отсутствовала строка заголовков во вкладке `fonts`.
+
+**Фикс:** добавлен `fix_headers.py` — вставляет правильный 22-колоночный header в нужные вкладки без потери данных. Запустить один раз: `python fix_headers.py`.
+
+**Полная схема колонок Google Sheet (fonts и аналогичных вкладок):**
+```
+title | image_url | cf_url | affiliate_url | slug | posted | pin_id | created_at |
+pin_path | mode | template_used | hook_enabled | hook_text |
+publish_status | published_at | error_reason |
+public_image_url | remote_image_path | vds_upload_status | uploaded_at |
+cleanup_status | cleanup_at
+```
+
+---
+
+### Новые файлы для автоматизации через Android телефоны
+
+**Ветка:** `feature/android-phone-automation`
+
+**Файлы:**
+- `phone_manager.py` — ADB утилиты: обнаружение устройств, push/download изображений
+- `pinterest_post.py` — публикация пина через Pinterest Android app (uiautomator2, без LLM)
+- `pinterest_warmup.py` — прогрев аккаунта: скролл, сохранение пинов (uiautomator2, без LLM)
+- `run_phones.py` — CLI точка входа
+
+**Команды:**
+```bash
+python run_phones.py devices                 # показать подключённые телефоны
+python run_phones.py post --tab fonts        # опубликовать следующий ready пин
+python run_phones.py warmup                  # прогрев (скролл + сохранить пины)
+python run_phones.py post --device SERIAL    # конкретный телефон
+```
+
+**Зависимости:**
+```bash
+pip install uiautomator2 droidrun==0.4.26
+python -m uiautomator2 init  # установить сервер на телефон (один раз!)
+```
+
+**Переменные в `.env`:**
+```env
+PHONE_ACCOUNTS={"2fb582767d26": "account1", "SERIAL2": "account2"}
+OLLAMA_URL=http://localhost:11434   # не нужен для warmup (оставлен для будущего)
+OLLAMA_MODEL=qwen3:4b
+```
+
+---
+
+### Верифицированный UI flow Pinterest (Android 8.1, русская локаль)
+
+**Постинг (`pinterest_post.py`):**
+1. `com.pinterest:id/menu_creation` → тап кнопки Создать
+2. `com.pinterest:id/action_button_label` text="Пин" → выбор типа
+3. Диалог разрешений (РАЗРЕШИТЬ ×2-3) → Pinterest открывает камеру
+4. `d.press("back")` → возврат в MediaGalleryActivity (галерея)
+5. Тап `gallery_title` → album picker → выбрать "PinterestBot"
+6. В альбоме: `items[0]`=камера, `items[1]`=сайт, `items[2]`=наш JPG → тап items[2]
+7. `gallery_next_gestalt_button` или text="Далее" → CreationActivity
+8. `editor_title` → заголовок (из hook_text или title)
+9. Скролл вниз → `editor_description` → affiliate_url
+10. text="Далее" (toolbar) → board picker (`board_section_picker_board_cell`)
+11. Тап доски "Fonts" → публикация → toast "Отличный пин!" → text="Готово"
+12. Обновление Google Sheet: `publish_status=published`, `posted=TRUE`, `published_at`
+
+**Изображения хранятся на телефоне в:**
+```
+/sdcard/DCIM/PinterestBot/
+```
+Папка создаётся автоматически, файл удаляется после публикации.
+
+**Прогрев (`pinterest_warmup.py`):**
+- 3 сценария с весами: scroll+save (60%), search (25%), notifications (15%)
+- Рандомные тайминги `_human_sleep(lo, hi)`, рандомный x-offset свайпа
+- Занимает ~60 секунд на сессию
+- **TODO:** добавить более "живые" поведения (открытие пина, чтение, иногда follow)
+
+**Почему не DroidRun:**
+- DroidRun 0.4.26 ожидает `com.droidrun.portal`, актуальный Portal APK — `com.mobilerun.portal`
+- Package name mismatch → ContentProvider недоступен → agent не может читать состояние экрана
+- uiautomator2 решает задачу надёжнее и быстрее без LLM
+
+---
+
 ### Контекст после лимитов (быстрый рестарт)
 1. Ветка эксперимента: `codex/signature-lock-comfy-experiment`.
 2. Проверочный запуск:
