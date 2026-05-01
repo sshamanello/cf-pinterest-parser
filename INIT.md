@@ -55,6 +55,29 @@
     - селекторы `hint/hintText` убраны,
     - используется безопасный поиск поля через `resourceId` и `android.widget.EditText`,
     - это устраняет ошибку `hint is not allowed` на текущем `uiautomator2`.
+- Добавлен автономный планировщик `scheduler.py` для phone automation:
+  - скрипт запускается один раз и сам ждёт ежедневные слоты,
+  - 5 слотов в день:
+    - `09:00 ± 15m`
+    - `12:00 ± 15m`
+    - `15:00 ± 15m`
+    - `18:00 ± 15m`
+    - `21:00 ± 15m`
+  - jitter пересчитывается заново каждый день,
+  - на каждый слот идёт цепочка:
+    - `python run_phones.py warmup`
+    - пауза `5-15` минут
+    - `python run_phones.py post --tab fonts`
+  - если `adb devices` пустой:
+    - слот пропускается,
+    - в `logs/scheduler.log` пишется warning,
+    - процесс не падает и ждёт следующий слот.
+- Для локальной проверки scheduler добавлены безопасные режимы:
+  - `python scheduler.py --dry-run` — показать ближайший слот и выйти,
+  - `python scheduler.py --run-now --force-no-phone` — симулировать слот без телефона и проверить skip-ветку.
+- Серверный запуск scheduler:
+  - `mkdir -p logs`
+  - `nohup python scheduler.py >> logs/scheduler.log 2>&1 &`
 - Существующие 3 сценария прогрева не удалялись и не меняли веса:
   - `scroll+save` — `60%`
   - `search` — `25%`
