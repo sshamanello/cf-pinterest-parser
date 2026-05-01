@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 PINTEREST_PKG = "com.pinterest"
 PIN_CELL_ID = "com.pinterest:id/lego_pin_grid_cell_id"
 BOARD_PICKER_ID = "com.pinterest:id/board_section_picker_board_cell"
-MIN_SESSION_SECONDS = 45.0
-MAX_SESSION_SECONDS = 80.0
+MIN_SESSION_SECONDS = 90.0
+MAX_SESSION_SECONDS = 180.0
 
 
 @dataclass
@@ -248,8 +248,8 @@ def _ensure_home_feed(d: u2.Device) -> None:
 def _extend_session_if_needed(d: u2.Device, session: WarmupSession, started_at: float) -> None:
     """Guarantee that warmup is not visually too short on the phone."""
     target_duration = _clamped_gauss(
-        mu=57.0,
-        sigma=9.0,
+        mu=125.0,
+        sigma=22.0,
         min_value=MIN_SESSION_SECONDS,
         max_value=MAX_SESSION_SECONDS,
     )
@@ -262,8 +262,6 @@ def _extend_session_if_needed(d: u2.Device, session: WarmupSession, started_at: 
 
     while (time.time() - started_at) < target_duration:
         _feed_browse_step(d, session)
-        if random.random() < 0.18:
-            break
 
 
 def _open_app(d: u2.Device) -> bool:
@@ -315,7 +313,7 @@ def _save_visible_pin(d: u2.Device) -> bool:
 def _scenario_scroll_and_save(d: u2.Device, session: WarmupSession) -> None:
     """Scroll home feed for a while, save 1-2 pins."""
     logger.info("Scenario: scroll home feed + save pin(s)")
-    scrolls = random.randint(4, 9)
+    scrolls = random.randint(6, 12)
     saved = 0
     opened = 0
     for _ in range(scrolls):
@@ -362,7 +360,7 @@ def _scenario_search(d: u2.Device, session: WarmupSession) -> None:
     d.press("enter")
     _human_sleep(2.0, 4.0, mu=2.8)
 
-    for _ in range(random.randint(3, 6)):
+    for _ in range(random.randint(5, 8)):
         _feed_browse_step(d, session)
 
     d.press("back")
@@ -377,7 +375,7 @@ def _scenario_browse_notifications(d: u2.Device, session: WarmupSession) -> None
         return
     notif.click()
     _human_sleep(2.0, 4.0, mu=2.9)
-    for _ in range(random.randint(2, 4)):
+    for _ in range(random.randint(3, 6)):
         _feed_browse_step(d, session)
 
     home = d(resourceId="com.pinterest:id/bottom_nav_home_icon")
