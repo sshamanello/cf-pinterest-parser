@@ -1,35 +1,64 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-echo "[$(date)] CF Pinterest Parser - Docker Entrypoint"
+APP_DIR=/app
+LOG_DIR=${CF_LOG_DIR:-/app/logs}
+CRON_LOG_FILE=${CF_CRON_LOG_FILE:-$LOG_DIR/docker-cron.log}
+CRON_SCHEDULE=${CF_CRON_SCHEDULE:-0 2 * * *}
+RUN_COMMAND_DEFAULT="python run.py prod-auto-pin --niche fonts --pages 1 --limit 20 --output output/docker_prod --upload-vds --sync-sheet"
+RUN_COMMAND=${CF_RUN_COMMAND:-$RUN_COMMAND_DEFAULT}
 
-# Если передан аргумент "cron" — запускаем cron-демон
-if [ "$1" = "cron" ]; then
-    echo "[$(date)] Starting in CRON mode..."
-    
-    # Создаём crontab из переменной окружения CRON_SCHEDULE (по умолчанию 09:00 UTC)
-    CRON_SCHEDULE="${CRON_SCHEDULE:-0 9 * * *}"
-    
-    echo "[$(date)] Cron schedule: $CRON_SCHEDULE"
-    echo "$CRON_SCHEDULE cd /app && python main.py >> /var/log/cf-parser.log 2>&1" > /etc/cron.d/cf-parser
-    
-    # Права на crontab
-    chmod 0644 /etc/cron.d/cf-parser
-    
-    # Применяем crontab
-    crontab /etc/cron.d/cf-parser
-    
-    # Создаём лог-файл
-    touch /var/log/cf-parser.log
-    
-    echo "[$(date)] Cron configured. Logs: /var/log/cf-parser.log"
-    echo "[$(date)] Starting cron daemon..."
-    
-    # Запускаем cron в foreground и tail логов
-    cron && tail -f /var/log/cf-parser.log
-    
-else
-    # Обычный режим — запуск один раз
-    echo "[$(date)] Starting in ONE-TIME mode..."
-    exec python main.py
-fi
+mkdir -p "$APP_DIR/output" "$LOG_DIR"
+cd "$APP_DIR"
+
+log() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"
+}
+
+start_cron() {
+  local command="${*:-$RUN_COMMAND}"
+  log "Starting cron mode"
+  log "Cron schedule: $CRON_SCHEDULE"
+  log "Cron command: $command"
+
+  cat > /etc/cron.d/cf-pinterest <<CRON
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+$CRON_SCHEDULE cd /app && $command >> $CRON_LOG_FILE 2>&1
+CRON
+
+  chmod 0644 /etc/cron.d/cf-pinterest
+  crontab /etc/cron.d/cf-pinterest
+  touch "$CRON_LOG_FILE"
+
+  cron
+  exec tail -F "$CRON_LOG_FILE"
+}
+
+case "${1:-run}" in
+  run)
+    shift || true
+    if [ "$#" -eq 0 ]; then
+      exec python run.py --help
+    fi
+    log "Running one-off command: $*"
+    exec "$@"
+    ;;
+  cron)
+    shift || true
+    start_cron "$@"
+    ;;
+  scheduler)
+    shift || true
+    log "Starting phone scheduler"
+    exec python scheduler.py "$@"
+    ;;
+  shell)
+    shift || true
+    exec bash "$@"
+    ;;
+  *)
+    log "Running custom entrypoint command: $*"
+    exec "$@"
+    ;;
+esac

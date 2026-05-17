@@ -3,6 +3,9 @@ credentials.json
 .DS_Store
 *.pyc
 __pycache__/
+.pycache_local/
 output/
 test/extractor/output/
 logs/
+._*
+.claude/

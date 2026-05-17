@@ -1,25 +1,18 @@
-# Makefile для CF Pinterest Parser
-# Быстрые команды для запуска
+# Makefile for CF Pinterest Parser
 
-.PHONY: help parse test pins clean logs
+.PHONY: help parse parse-fonts parse-graphics parse-3d-printing pins test prod-auto-pin \
+	docker-build docker-help docker-shell docker-run-help docker-smoke docker-prod \
+	docker-cron docker-phone logs stop clean clean-logs dist check
 
-# ═══════════════════════════════════════════════════════════════
-# ЛОКАЛЬНЫЙ ЗАПУСК (без Docker)
-# ═══════════════════════════════════════════════════════════════
-
-# Полный парсинг (3 страницы, все категории)
 parse:
 	python run.py parse
 
-# Полный парсинг с кастомным количеством страниц
 parse-50:
 	python run.py parse --pages 50
 
-# Тест (1 категория, 1 страница)
 test:
 	python run.py test
 
-# Только одна категория
 parse-fonts:
 	python run.py parse --niche fonts
 
@@ -29,83 +22,69 @@ parse-graphics:
 parse-3d-printing:
 	python run.py parse --niche 3d-printing
 
-# Только генерация пинов
 pins:
 	python run.py pins
 
-# ═══════════════════════════════════════════════════════════════
-# DOCKER ЗАПУСК
-# ═══════════════════════════════════════════════════════════════
+prod-auto-pin:
+	python run.py prod-auto-pin --niche fonts --pages 1 --limit 20 --output output/prod/fonts --upload-vds --sync-sheet
 
-# Сборка образа
-build:
+check:
+	python test_components.py
+
+# Docker
+
+docker-build:
 	docker compose build
 
-# Разовый запуск (всё)
-run:
-	docker compose run --rm cf-parser
+docker-run-help:
+	docker compose run --rm cf-runner
 
-# Разовый запуск с кастомными страницами
-run-50:
-	docker compose run --rm -e PAGES_PER_RUN=50 cf-parser
+docker-shell:
+	docker compose run --rm cf-runner shell
 
-# Тест
-run-test:
-	docker compose run --rm cf-parser python run.py test
+docker-smoke:
+	docker compose run --rm cf-runner run python test_components.py
 
-# Cron-демон (автоматический)
-cron:
-	docker compose up -d cf-parser-cron
+docker-prod:
+	docker compose run --rm cf-runner run python run.py prod-auto-pin --niche fonts --pages 1 --limit 20 --output output/docker_prod --upload-vds --sync-sheet
 
-# Просмотр логов cron
+docker-cron:
+	docker compose --profile cron up -d cf-batch-cron
+
+docker-phone:
+	docker compose --profile phone up -d cf-phone-scheduler
+
 logs:
-	docker compose logs -f cf-parser-cron
+	tail -f logs/*.log
 
-# Остановить cron
 stop:
-	docker compose down
+	docker compose --profile cron --profile phone down
 
-# ═══════════════════════════════════════════════════════════════
-# УТИЛИТЫ
-# ═══════════════════════════════════════════════════════════════
-
-# Очистка сгенерированных пинов
 clean:
 	rm -rf output/*.jpg
 	rm -rf __pycache__
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete 2>/dev/null || true
 
-# Очистка логов
 clean-logs:
 	rm -f logs/*.log
 
-# Полная очистка
 dist: clean clean-logs
 
-# Проверка компонентов
-check:
-	python test_components.py
-
-# Справка
 help:
-	@echo "CF Pinterest Parser — Быстрые команды"
+	@echo "CF Pinterest Parser"
 	@echo ""
-	@echo "ЛОКАЛЬНЫЙ ЗАПУСК:"
-	@echo "  make parse         — полный парсинг (3 стр., все категории)"
-	@echo "  make parse-50      — массовый сбор (50 стр.)"
-	@echo "  make parse-fonts   — только fonts"
-	@echo "  make test          — тест (1 стр. fonts)"
+	@echo "Local commands:"
+	@echo "  make parse            - parse + pins + sheet sync"
+	@echo "  make parse-50         - bulk parsing across categories"
+	@echo "  make prod-auto-pin    - production fonts batch with VDS upload + sheet sync"
+	@echo "  make check            - run smoke checks"
 	@echo ""
-	@echo "DOCKER:"
-	@echo "  make build         — собрать образ"
-	@echo "  make run           — разовый запуск"
-	@echo "  make run-50        — 50 страниц"
-	@echo "  make cron          — запустить cron-демон"
-	@echo "  make logs          — смотреть логи"
-	@echo "  make stop          — остановить демон"
-	@echo ""
-	@echo "УТИЛИТЫ:"
-	@echo "  make clean         — очистить пины и кэш"
-	@echo "  make check         — проверить компоненты"
-	@echo "  make help          — эта справка"
+	@echo "Docker commands:"
+	@echo "  make docker-build     - build the Docker image"
+	@echo "  make docker-run-help  - open the CLI help inside Docker"
+	@echo "  make docker-smoke     - run smoke checks in Docker"
+	@echo "  make docker-prod      - run the production fonts batch in Docker"
+	@echo "  make docker-cron      - start the cron batch service"
+	@echo "  make docker-phone     - start the phone scheduler service"
+	@echo "  make stop             - stop Docker services"

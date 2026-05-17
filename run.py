@@ -29,13 +29,9 @@ from font_publish_pipeline import run_publish_batch
 from parser import parse_category
 from prod_auto_pin_pipeline import run_prod_auto_pin, upload_report_pins_to_vds
 from sheets import append_products, ensure_tabs, get_sheet_client, test_connection, upsert_auto_pin_report
+from logging_utils import configure_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger(__name__)
+logger = configure_logging("run", default_log_name="run.log")
 
 
 def cmd_parse(niche: str = None, pages: int = None):

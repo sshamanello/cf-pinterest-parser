@@ -50,6 +50,7 @@ def _get_next_ready_pin(tab: str = "fonts") -> dict | None:
                 and val("vds_upload_status") == "uploaded"
                 and val("public_image_url")
                 and val("slug")):
+            logger.info("Found ready pin in sheet | tab=%s | row=%d | slug=%s", tab, idx, val("slug"))
             return {
                 "row_idx": idx, "slug": val("slug"),
                 "title": val("title"), "hook_text": val("hook_text"),
@@ -90,6 +91,7 @@ def _unlock_and_home(d: u2.Device) -> None:
 
 def _open_pinterest(d: u2.Device) -> None:
     _unlock_and_home(d)
+    logger.info("Opening Pinterest app")
     d.app_start(PINTEREST_PKG, stop=True)
     time.sleep(6)
     # Dismiss any onboarding popups
@@ -107,6 +109,7 @@ def _navigate_to_gallery(d: u2.Device) -> None:
     # Tap Create in bottom nav
     assert d(resourceId="com.pinterest:id/menu_creation").exists(timeout=8), \
         "Create button not found"
+    logger.info("Pinterest opened, entering Create -> Pin flow")
     d(resourceId="com.pinterest:id/menu_creation").click()
     time.sleep(2)
 
@@ -141,6 +144,7 @@ def _select_image_from_album(d: u2.Device) -> None:
     # Open album picker by tapping the title
     current_title = d(resourceId="com.pinterest:id/gallery_title").get_text(timeout=3)
     if current_title != "PinterestBot":
+        logger.info("Switching gallery album from '%s' to PinterestBot", current_title)
         d(resourceId="com.pinterest:id/gallery_title").click()
         time.sleep(2)
         assert d(text="PinterestBot").exists(timeout=5), \
@@ -154,6 +158,7 @@ def _select_image_from_album(d: u2.Device) -> None:
     )
     count = items.count
     assert count > 2, f"Expected >2 items in PinterestBot album, got {count}"
+    logger.info("Selecting first uploaded media item from PinterestBot album | gallery_count=%d", count)
     items[2].click()
     time.sleep(2)
 
@@ -172,6 +177,7 @@ def _select_image_from_album(d: u2.Device) -> None:
 
 def _fill_and_publish(d: u2.Device, title: str, description: str) -> None:
     """Fill title + description in CreationActivity, then publish."""
+    logger.info("Filling pin editor | title_len=%d | description_len=%d", len(title), len(description))
     # Title
     title_field = d(resourceId="com.pinterest:id/editor_title")
     assert title_field.exists(timeout=5), "Title field not found"
@@ -205,6 +211,7 @@ def _fill_and_publish(d: u2.Device, title: str, description: str) -> None:
 
     # Board picker bottom sheet appears — select first available board
     if d(resourceId="com.pinterest:id/board_section_picker_board_cell").exists(timeout=5):
+        logger.info("Board picker opened, selecting first board")
         d(resourceId="com.pinterest:id/board_section_picker_board_cell").click()
         time.sleep(5)
     else:
@@ -233,11 +240,13 @@ def post_pin(serial: str, tab: str = "fonts") -> bool:
     logger.info("[%s] Posting: %s", serial, slug)
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     local_img = download_image(pin["public_image_url"], TEMP_DIR)
+    logger.info("[%s] Local pin asset ready: %s", serial, local_img)
 
     # Push image to dedicated album
     d_raw = u2.connect(serial)
     d_raw.shell(f"mkdir -p {REMOTE_ALBUM_DIR}")
     remote_path = f"{REMOTE_ALBUM_DIR}/{local_img.name}"
+    logger.info("[%s] Uploading asset to device album: %s", serial, remote_path)
     r = subprocess.run(["adb", "-s", serial, "push", str(local_img), remote_path],
                        capture_output=True, text=True)
     if r.returncode != 0:
@@ -258,5 +267,6 @@ def post_pin(serial: str, tab: str = "fonts") -> bool:
         logger.error("[%s] Failed to post %s: %s", serial, slug, e)
         return False
     finally:
+        logger.info("[%s] Cleaning up uploaded device asset: %s", serial, remote_path)
         d_raw.shell(f"rm -f {remote_path}")
         d_raw.app_stop(PINTEREST_PKG)

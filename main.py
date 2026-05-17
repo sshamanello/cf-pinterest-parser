@@ -4,15 +4,11 @@ import time
 
 from config import CATEGORIES, MIN_DELAY, MAX_DELAY
 from comfy_processor import process_products
+from logging_utils import configure_logging
 from parser import parse_category
 from sheets import append_products, ensure_tabs, get_sheet_client, test_connection
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger(__name__)
+logger = configure_logging("main", default_log_name="main.log")
 
 
 def main() -> None:

@@ -15,15 +15,11 @@ import logging
 import sys
 
 from dotenv import load_dotenv
+from logging_utils import configure_logging
 
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger(__name__)
+logger = configure_logging("run_phones", default_log_name="phones.log")
 
 
 def cmd_devices():

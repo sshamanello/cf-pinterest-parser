@@ -1,142 +1,75 @@
-# Docker Quick Start
+# Docker quickstart
 
-> Быстрая шпаргалка по запуску проекта в Docker
-
----
-
-## Два режима работы
-
-### 1️⃣ Разовый запуск
-```bash
-docker compose run --rm cf-parser
-```
-Запускается один раз, выполняет парсинг, выходит.
-
-### 2️⃣ Автоматический cron-демон
-```bash
-docker compose up -d cf-parser-cron
-```
-Работает постоянно, выполняет парсинг по расписанию (по умолчанию: 09:00 UTC ежедневно).
-
----
-
-## Быстрая установка
+## 1. Prepare secrets
 
 ```bash
-# 1. Убедитесь, что Docker запущен
-docker --version
-
-# 2. Создайте .env и credentials.json
 cp .env.example .env
-# Отредактируйте .env и добавьте credentials.json
+# add real values to .env
+# place credentials.json in the repo root
+```
 
-# 3. Соберите образ
+## 2. Build
+
+```bash
 docker compose build
-
-# 4. Запустите (выберите режим)
-docker compose run --rm cf-parser              # разовый запуск
-# ИЛИ
-docker compose up -d cf-parser-cron            # cron-демон
 ```
 
----
+## 3. Run one command
 
-## Управление cron-демоном
+Show CLI help:
+```bash
+docker compose run --rm cf-runner
+```
+
+Run smoke checks:
+```bash
+docker compose run --rm cf-runner run python test_components.py
+```
+
+Run a production fonts batch:
+```bash
+docker compose run --rm cf-runner run python run.py prod-auto-pin --niche fonts --pages 1 --limit 20 --output output/docker_prod --upload-vds --sync-sheet
+```
+
+## 4. Start background services
+
+Cron batch service:
+```bash
+docker compose --profile cron up -d cf-batch-cron
+```
+
+Phone scheduler service:
+```bash
+docker compose --profile phone up -d cf-phone-scheduler
+```
+
+## 5. Watch logs
 
 ```bash
-# Запустить
-docker compose up -d cf-parser-cron
-
-# Остановить
-docker compose down
-
-# Логи в реальном времени
-docker compose logs -f cf-parser-cron
-
-# Логи парсинга
-tail -f logs/cf-parser.log
-
-# Статус
-docker compose ps
+tail -f logs/docker-cron.log
 ```
-
----
-
-## Настройка расписания
-
-Отредактируйте `.env`:
-
-```env
-CRON_SCHEDULE=0 9 * * *     # 09:00 UTC ежедневно (по умолчанию)
-CRON_SCHEDULE=0 */6 * * *   # каждые 6 часов
-CRON_SCHEDULE=30 8 * * 1    # каждый понедельник в 08:30
-```
-
-Перезапустите:
-```bash
-docker compose down
-docker compose up -d cf-parser-cron
-```
-
----
-
-## Примеры
 
 ```bash
-# Тестовый запуск (1 страница)
-docker compose run --rm -e PAGES_PER_RUN=1 cf-parser
-
-# Массовый сбор (50 страниц)
-docker compose run --rm -e PAGES_PER_RUN=50 cf-parser
-
-# Обновить код и пересобрать
-git pull
-docker compose build
-docker compose up -d cf-parser-cron
+docker compose logs -f cf-batch-cron
 ```
 
----
-
-## Структура файлов
-
-```
-cf-pinterest-parser/
-├── .env                    ← переменные окружения
-├── credentials.json        ← Google Service Account ключ
-├── docker-compose.yml      ← конфигурация
-├── Dockerfile              ← образ
-├── docker-entrypoint.sh    ← entrypoint
-├── output/                 ← сгенерированные пины (bind-mount)
-└── logs/                   ← логи cron (создаётся автоматически)
-    └── cf-parser.log
-```
-
----
-
-## Troubleshooting
-
-### Docker не запущен
 ```bash
-# Windows: запустите Docker Desktop
-# Linux: sudo systemctl start docker
+docker compose logs -f cf-phone-scheduler
 ```
 
-### Chromium падает
+## 6. Stop everything
+
 ```bash
-# Увеличьте shm_size в docker-compose.yml
-shm_size: '2gb'
+docker compose --profile cron --profile phone down
 ```
 
-### Нет доступа к ComfyUI на хосте
-```bash
-# В .env используйте:
-# Windows/Mac:
-COMFY_URL=http://host.docker.internal:8188
+## Notes
 
-# Linux:
-COMFY_URL=http://172.17.0.1:8188
-```
+- `cf-runner` is for one-off commands.
+- `cf-batch-cron` is for repeated content generation.
+- `cf-phone-scheduler` is for Android posting automation and needs Linux USB access.
+- If you need maximum stability for ADB, host-level `systemd` is still a good choice.
 
----
+## More details
 
-**Полная документация:** см. `DOCKER.md`
+See [DOCKER.md](DOCKER.md).

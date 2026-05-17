@@ -7,8 +7,5 @@ logs/
 __pycache__/
 *.pyc
 *.pyo
-*.md
-.dockerignore
-.gitignore
-test_components.py
-TEST_REPORT.md
+.DS_Store
+test/extractor/output/

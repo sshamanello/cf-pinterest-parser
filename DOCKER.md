@@ -1,393 +1,212 @@
-# Docker — Руководство по запуску
+# Docker guide
 
-> Два режима работы: разовый запуск и автоматический cron-демон
+This repository ships with Docker manifests for the real current workflow, not the old `main.py` cron-only setup.
 
----
+## Services
 
-## Быстрый старт
+### `cf-runner`
+One-off command runner.
 
-### 1. Подготовка файлов
-
+Default behavior:
 ```bash
-# Убедитесь, что есть:
-ls -la
-# .env                  ← переменные окружения
-# credentials.json      ← Google Service Account ключ
-# docker-compose.yml    ← конфигурация Docker
+docker compose run --rm cf-runner
 ```
 
-### 2. Сборка образа
+Override with any command, for example:
+```bash
+docker compose run --rm cf-runner run python run.py prod-auto-pin --niche fonts --pages 1 --limit 20 --output output/docker_prod --upload-vds --sync-sheet
+```
+
+### `cf-batch-cron`
+Background cron container that repeatedly runs the batch command from `CF_RUN_COMMAND` using the schedule in `CF_CRON_SCHEDULE`.
+
+Start it:
+```bash
+docker compose --profile cron up -d cf-batch-cron
+```
+
+### `cf-phone-scheduler`
+Containerized phone scheduler.
+
+Start it:
+```bash
+docker compose --profile phone up -d cf-phone-scheduler
+```
+
+Important:
+- it mounts `/dev/bus/usb` from the Linux host;
+- it is meant for Linux only;
+- for highest reliability, host-level `systemd` is still a valid alternative.
+
+## Build
 
 ```bash
 docker compose build
 ```
 
-Это займёт 3-5 минут (установка Chromium + зависимости).
+What the image contains:
+- Python dependencies from `requirements.txt`;
+- Playwright Chromium;
+- `adb`;
+- `cron`;
+- `openssh-client` + `expect` for VDS upload flows.
 
----
+## Entrypoint modes
 
-## Режим 1: Разовый запуск
+The image entrypoint supports these modes:
 
-Запустить парсинг один раз и выйти:
-
+### `run`
 ```bash
-docker compose run --rm cf-parser
+docker compose run --rm cf-runner run python run.py --help
 ```
 
-**Что происходит:**
-- Контейнер запускается
-- Выполняется `python main.py`
-- Результаты сохраняются в `./output/` и Google Sheets
-- Контейнер удаляется (`--rm`)
+### `cron`
+Used by `cf-batch-cron`.
 
-**Когда использовать:**
-- Тестирование
-- Ручной запуск
-- Первоначальный массовый сбор
-
-**Пример с переопределением переменных:**
-
-```bash
-# Собрать 50 страниц вместо 3
-docker compose run --rm -e PAGES_PER_RUN=50 cf-parser
+It writes a cron job like:
+```text
+CF_CRON_SCHEDULE cd /app && CF_RUN_COMMAND >> /app/logs/docker-cron.log 2>&1
 ```
 
----
+### `scheduler`
+Used by `cf-phone-scheduler`.
 
-## Режим 2: Автоматический cron-демон
-
-Запустить контейнер, который будет работать постоянно и выполнять парсинг по расписанию:
-
+It launches:
 ```bash
-docker compose up -d cf-parser-cron
+python scheduler.py
 ```
 
-**Что происходит:**
-- Контейнер запускается в фоне (`-d`)
-- Внутри настраивается cron
-- Парсинг выполняется по расписанию (по умолчанию: 09:00 UTC ежедневно)
-- Логи пишутся в `./logs/cf-parser.log`
+### `shell`
+```bash
+docker compose run --rm cf-runner shell
+```
 
-### Настройка расписания
+## Required mounted files
 
-Отредактируйте `.env`:
+The compose file mounts:
+- `./output:/app/output`
+- `./logs:/app/logs`
+- `./credentials.json:/app/credentials.json:ro`
 
+You are expected to provide:
+- `.env`
+- `credentials.json`
+
+## Environment variables
+
+### Core
 ```env
-# Формат: минута час день месяц день_недели
-CRON_SCHEDULE=0 9 * * *     # 09:00 UTC ежедневно (по умолчанию)
-CRON_SCHEDULE=0 */6 * * *   # каждые 6 часов
-CRON_SCHEDULE=30 8 * * 1    # каждый понедельник в 08:30 UTC
-CRON_SCHEDULE=0 0 1 * *     # 1-го числа каждого месяца в 00:00 UTC
-```
-
-После изменения `.env`:
-
-```bash
-docker compose down
-docker compose up -d cf-parser-cron
-```
-
-### Управление cron-демоном
-
-```bash
-# Просмотр логов в реальном времени
-docker compose logs -f cf-parser-cron
-
-# Остановить демон
-docker compose down
-
-# Перезапустить демон
-docker compose restart cf-parser-cron
-
-# Проверить статус
-docker compose ps
-```
-
-### Просмотр логов парсинга
-
-```bash
-# Логи cron-демона
-tail -f logs/cf-parser.log
-
-# Или через Docker
-docker compose exec cf-parser-cron tail -f /var/log/cf-parser.log
-```
-
----
-
-## Структура файлов
-
-```
-cf-pinterest-parser/
-├── .env                      ← переменные окружения
-├── credentials.json          ← Google Service Account (НЕ коммитить!)
-├── docker-compose.yml        ← конфигурация Docker
-├── Dockerfile                ← образ контейнера
-├── docker-entrypoint.sh      ← entrypoint-скрипт
-├── output/                   ← сгенерированные пины (bind-mount)
-│   └── *.jpg
-├── logs/                     ← логи cron-демона (создаётся автоматически)
-│   └── cf-parser.log
-└── *.py                      ← исходный код
-```
-
----
-
-## Переменные окружения (.env)
-
-```env
-# Обязательные
-GOOGLE_SHEET_ID=1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg
+GOOGLE_SHEET_ID=...
 CF_AFFILIATE_ID=7029352
 GOOGLE_CREDENTIALS_PATH=credentials.json
-
-# Опциональные
-PAGES_PER_RUN=3
-CRON_SCHEDULE=0 9 * * *  # только для cf-parser-cron
-
-# ComfyUI (если запущен на хосте)
-COMFY_URL=http://host.docker.internal:8188  # Windows/Mac
-# COMFY_URL=http://172.17.0.1:8188          # Linux
-COMFY_MODEL=realisticVisionV51.safetensors
-COMFY_DENOISE=0.50
 ```
 
----
+### Batch / VDS
+```env
+VDS_SSH_HOST=...
+VDS_SSH_USER=...
+VDS_SSH_PORT=22
+VDS_SSH_PASSWORD=
+VDS_REMOTE_DIR=/var/www/html/pins/ready
+VDS_PUBLIC_BASE_URL=https://example.com/pins/ready
+```
 
-## Volumes (монтирование)
+### Logging
+```env
+CF_LOG_LEVEL=INFO
+CF_LOG_DIR=/app/logs
+CF_LOG_MAX_BYTES=5242880
+CF_LOG_BACKUP_COUNT=5
+```
 
-| Путь в контейнере | Путь на хосте | Описание |
-|---|---|---|
-| `/app/output` | `./output` | Сгенерированные Pinterest-пины |
-| `/app/credentials.json` | `./credentials.json` | Google Service Account ключ (read-only) |
-| `/var/log` | `./logs` | Логи cron-демона (только cf-parser-cron) |
+### Cron container
+```env
+CF_CRON_SCHEDULE=0 2 * * *
+CF_RUN_COMMAND=python run.py prod-auto-pin --niche fonts --pages 1 --limit 20 --output output/docker_prod --upload-vds --sync-sheet
+```
 
-**Важно:** `credentials.json` монтируется в режиме read-only (`:ro`) для безопасности.
+## Common commands
 
----
+### Smoke checks in Docker
+```bash
+docker compose run --rm cf-runner run python test_components.py
+```
 
-## Примеры использования
+### One-off production batch
+```bash
+docker compose run --rm cf-runner run python run.py prod-auto-pin --niche fonts --pages 1 --limit 20 --output output/docker_prod --upload-vds --sync-sheet
+```
 
-### Тестовый запуск (1 страница fonts)
+### Start the cron batch service
+```bash
+docker compose --profile cron up -d cf-batch-cron
+```
+
+### Start the phone scheduler service
+```bash
+docker compose --profile phone up -d cf-phone-scheduler
+```
+
+### Stop background services
+```bash
+docker compose --profile cron --profile phone down
+```
+
+## Logs
+
+Host-side logs:
+- `./logs/docker-cron.log`
+- `./logs/run.log`
+- `./logs/phones.log`
+- `./logs/scheduler.log`
+- `./logs/test_components.log`
+
+Useful commands:
+```bash
+tail -f logs/docker-cron.log
+```
 
 ```bash
-docker compose run --rm -e PAGES_PER_RUN=1 cf-parser
+docker compose logs -f cf-batch-cron
 ```
-
-### Первоначальный массовый сбор (50 страниц)
 
 ```bash
-docker compose run --rm -e PAGES_PER_RUN=50 cf-parser
+docker compose logs -f cf-phone-scheduler
 ```
 
-### Запуск cron-демона с кастомным расписанием
+## Recommended production split
 
+For a stable production system, this split works best:
+
+### Workstation / Mac
+Run the heavy batch generation manually or on demand:
 ```bash
-# В .env добавить:
-# CRON_SCHEDULE=0 */4 * * *
-
-docker compose up -d cf-parser-cron
+python3.12 run.py prod-auto-pin --niche fonts --pages 10 --limit 300 --output output/prod/fonts_$(date +%Y%m%d) --upload-vds --sync-sheet
 ```
 
-### Проверка работы cron
+### Linux phone server
+Run only the posting scheduler:
+- host `adb`
+- Android phone over USB
+- `scheduler.py` via `systemd` or `cf-phone-scheduler`
 
-```bash
-# Войти в контейнер
-docker compose exec cf-parser-cron bash
-
-# Проверить crontab
-crontab -l
-
-# Проверить логи
-tail -f /var/log/cf-parser.log
-```
-
----
-
-## Деплой на сервер
-
-### Вариант 1: Cron внутри контейнера (рекомендуется)
-
-```bash
-# На сервере
-git clone https://github.com/sshamanello/cf-pinterest-parser
-cd cf-pinterest-parser
-
-# Создать .env и credentials.json
-nano .env
-nano credentials.json
-
-# Собрать и запустить
-docker compose build
-docker compose up -d cf-parser-cron
-
-# Проверить логи
-docker compose logs -f cf-parser-cron
-```
-
-### Вариант 2: Внешний cron на хосте
-
-```bash
-# Собрать образ
-docker compose build
-
-# Добавить в crontab хоста
-crontab -e
-
-# Добавить строку:
-0 9 * * * cd /path/to/cf-pinterest-parser && docker compose run --rm cf-parser >> /var/log/cf-parser-host.log 2>&1
-```
-
----
-
-## Обновление кода
-
-```bash
-# Остановить демон (если запущен)
-docker compose down
-
-# Обновить код
-git pull
-
-# Пересобрать образ
-docker compose build
-
-# Запустить снова
-docker compose up -d cf-parser-cron
-```
-
----
+This keeps image processing away from the phone host and lets the posting machine stay small and stable.
 
 ## Troubleshooting
 
-### Проблема: "credentials.json not found"
+### Docker CLI missing on the current machine
+If `docker compose` is not available, the manifests can still be reviewed and committed, but build/run validation must happen on a machine with Docker installed.
 
+### `credentials.json` mount errors
+Make sure the file exists next to `docker-compose.yml`.
+
+### `adb devices` empty inside `cf-phone-scheduler`
+Check on the host first:
 ```bash
-# Проверить, что файл существует
-ls -la credentials.json
-
-# Проверить монтирование
-docker compose run --rm cf-parser ls -la /app/credentials.json
+adb devices -l
 ```
 
-### Проблема: Chromium падает с ошибкой
+If the host also sees no device, fix USB/debugging before touching the container.
 
-```bash
-# Увеличить shm_size в docker-compose.yml
-shm_size: '2gb'  # было 1gb
-
-docker compose down
-docker compose build
-docker compose up -d cf-parser-cron
-```
-
-### Проблема: Cron не запускается
-
-```bash
-# Проверить логи контейнера
-docker compose logs cf-parser-cron
-
-# Войти в контейнер и проверить cron
-docker compose exec cf-parser-cron bash
-crontab -l
-ps aux | grep cron
-```
-
-### Проблема: Нет доступа к ComfyUI на хосте
-
-```bash
-# Windows/Mac: использовать host.docker.internal
-COMFY_URL=http://host.docker.internal:8188
-
-# Linux: использовать IP хоста
-COMFY_URL=http://172.17.0.1:8188
-
-# Или запустить ComfyUI в отдельном контейнере
-```
-
----
-
-## Мониторинг
-
-### Просмотр статуса
-
-```bash
-docker compose ps
-```
-
-### Просмотр логов
-
-```bash
-# Логи контейнера
-docker compose logs -f cf-parser-cron
-
-# Логи парсинга
-tail -f logs/cf-parser.log
-```
-
-### Проверка использования ресурсов
-
-```bash
-docker stats cf-parser-cron
-```
-
----
-
-## Безопасность
-
-1. **credentials.json** — никогда не коммитить в Git
-2. **.env** — никогда не коммитить в Git
-3. **credentials.json** монтируется в режиме read-only (`:ro`)
-4. **output/** и **logs/** можно коммитить в `.gitignore`
-
----
-
-## Сравнение режимов
-
-| Параметр | Разовый запуск | Cron-демон |
-|---|---|---|
-| Команда | `docker compose run --rm cf-parser` | `docker compose up -d cf-parser-cron` |
-| Автоматизация | Нет (ручной запуск) | Да (по расписанию) |
-| Логи | В консоль | В `logs/cf-parser.log` |
-| Использование | Тестирование, разовые задачи | Production, автоматический режим |
-| Перезапуск | Нет | Да (`restart: unless-stopped`) |
-
----
-
-## Полезные команды
-
-```bash
-# Сборка без кэша
-docker compose build --no-cache
-
-# Удалить все контейнеры и образы
-docker compose down --rmi all
-
-# Очистить volumes
-docker compose down -v
-
-# Войти в контейнер
-docker compose exec cf-parser-cron bash
-
-# Запустить команду в контейнере
-docker compose exec cf-parser-cron python test_components.py
-
-# Просмотр размера образа
-docker images | grep cf-pinterest-parser
-```
-
----
-
-## Чеклист перед запуском
-
-- [ ] `.env` создан и заполнен
-- [ ] `credentials.json` в корне проекта
-- [ ] Docker и Docker Compose установлены
-- [ ] Образ собран: `docker compose build`
-- [ ] (Опционально) `CRON_SCHEDULE` настроен в `.env`
-- [ ] Папка `output/` существует (создастся автоматически)
-- [ ] Папка `logs/` существует (создастся автоматически)
-
----
-
-**Готово!** Теперь проект можно запускать на любом устройстве с Docker.
+### Creative Fabrica returns `Just a moment...`
+This is Cloudflare. The parser now waits longer and logs the challenge, but repeated failures still require rerunning from a cleaner IP/session.

@@ -26,6 +26,7 @@ def get_connected_devices() -> list[str]:
             serial, state = line.split("\t", 1)
             if state.strip() == "device":
                 serials.append(serial.strip())
+    logger.info("ADB scan complete | devices=%d", len(serials))
     return serials
 
 
@@ -66,6 +67,7 @@ def download_image(url: str, dest_dir: str | Path = "/tmp") -> Path:
     local_path = dest_dir / filename
 
     if local_path.exists():
+        logger.info("Using cached image %s for %s", local_path, url)
         return local_path
 
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})

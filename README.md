@@ -1,309 +1,249 @@
 # CF Pinterest Parser
 
-Автоматически парсит товары с Creative Fabrica, создаёт Pinterest-пины (1000×1500 px)
-и записывает всё в Google Sheets.
+Production-oriented toolkit for turning Creative Fabrica products into a Pinterest publishing queue.
 
-**🐳 Docker + ⚡ Makefile** — быстрый запуск на любом устройстве.
+The repository now covers the full workflow for the `fonts` MVP:
+- scrape Creative Fabrica product previews;
+- generate Pinterest pins with the automatic layout pipeline;
+- upload ready JPG assets to a VDS;
+- sync metadata into Google Sheets;
+- publish through either `n8n` or Android phone automation;
+- keep daily posting warm and human-looking through a jittered scheduler.
 
----
+## Current architecture
 
-## Быстрый старт 🚀
-
-```bash
-# 1. Клонировать
-git clone https://github.com/sshamanello/cf-pinterest-parser
-cd cf-pinterest-parser
-
-# 2. Настроить .env и credentials.json
-cp .env.example .env
-# Отредактируйте .env и добавьте credentials.json
-
-# 3. Запустить!
-make parse                    # парсинг + пины + шит (3 стр.)
-make parse-50                 # массовый сбор (50 стр.)
-make test                     # тест (1 стр. fonts)
+```text
+Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.py
+                -> output/prod/... -> VDS upload -> Google Sheet queue
+                -> n8n or Android phone automation -> Pinterest
 ```
 
-**Или через Docker:**
-```bash
-make build                    # собрать образ (один раз)
-make run                      # разовый запуск
-make cron                     # автоматический cron-демон
+## Main entrypoints
+
+### Content pipeline
+- `python run.py parse`
+  Legacy all-category parse + image processing + Google Sheets write.
+- `python run.py auto-pin --input <file-or-dir> --output <dir>`
+  Runs the automatic pin builder on existing preview files.
+- `python run.py prod-auto-pin --niche fonts --pages 10 --limit 300 --output output/prod/fonts_YYYYMMDD --upload-vds --sync-sheet`
+  Main production batch: parse -> download previews -> generate pins -> upload JPG to VDS -> sync Google Sheet.
+- `python run.py upload-vds --report <report.json> --sync-sheet --tab fonts`
+  Uploads already-generated JPG assets from an existing report.
+
+### Phone automation
+- `python run_phones.py devices`
+- `python run_phones.py warmup`
+- `python run_phones.py post --tab fonts`
+- `python scheduler.py`
+
+### Smoke checks
+- `python test_components.py`
+
+## Repository layout
+
+```text
+run.py                     Main CLI for scraping, pin generation, VDS upload, and sheet sync
+prod_auto_pin_pipeline.py  Production batch orchestrator
+auto_pin_pipeline.py       Automatic pin builder and reporting
+parser.py                  Playwright scraper for Creative Fabrica category pages
+sheets.py                  Google Sheets auth, upsert, and queue helpers
+run_phones.py              CLI for Android phone warmup/post flows
+pinterest_warmup.py        Human-like Pinterest warmup behaviors
+pinterest_post.py          Android UI automation for posting one ready pin
+scheduler.py               5-slot daily phone scheduler with jitter
+logging_utils.py           Shared rotating-file + console logging setup
+deploy/                    systemd unit, udev rule, and bootstrap helper for phone server
+docker-compose.yml         Container roles for one-off runs, cron batches, and phone scheduler
+n8n/                       Importable n8n workflows for publish/cleanup
 ```
 
-**Все команды:** `make help`
+## Environment
 
----
-
-## Как это работает
-
-```
-1. Playwright (headless Chrome) открывает страницы CF по категориям
-2. JS-скрипт извлекает: название, slug, URL картинки, URL товара
-3. Картинка обрабатывается:
-   - если запущен ComfyUI → img2img (SD 1.5, denoising 0.5) → уникальная версия
-   - иначе → используется оригинал с CF
-4. Pillow накладывает overlay: название, бейдж категории, CTA → output/{slug}.jpg
-5. Новые товары записываются в Google Sheets (дубли пропускаются по slug)
-6. Повторяется для 7 категорий, 3 страницы каждая (по умолчанию)
-```
-
----
-
-## Структура файлов
-
-```
-cf-pinterest-parser/
-├── main.py                 # точка входа
-├── parser.py               # Playwright-скрапер CF (новый браузер на каждую страницу)
-├── comfy_processor.py      # ComfyUI img2img + Pillow overlay → output/{slug}.jpg
-├── image_processor.py      # устаревший Pillow-only вариант (не используется)
-├── sheets.py               # чтение/запись Google Sheets
-├── config.py               # константы и env-переменные
-├── requirements.txt
-├── .env.example            # шаблон переменных окружения
-├── Dockerfile              # образ контейнера
-├── docker-compose.yml      # конфигурация Docker (два сервиса)
-├── docker-entrypoint.sh    # entrypoint с поддержкой cron
-├── .dockerignore           # исключения из образа
-├── DOCKER.md               # полная Docker-документация
-├── DOCKER_QUICKSTART.md    # шпаргалка по Docker
-├── .gitignore
-├── CLAUDE.md               # инструкции для AI-ассистентов
-├── INIT.md                 # быстрый контекст проекта
-├── test_components.py      # тестирование компонентов
-└── .github/
-    └── workflows/
-        └── cron.yml        # GitHub Actions cron (09:00 UTC ежедневно)
-```
-
----
-
-## Быстрый старт (локально)
-
-### Шаг 1. Клонировать и установить зависимости
-
-```bash
-git clone https://github.com/sshamanello/cf-pinterest-parser
-cd cf-pinterest-parser
-pip install -r requirements.txt
-playwright install chromium
-```
-
-### Шаг 2. Создать Google Service Account
-
-1. Перейти на [console.cloud.google.com](https://console.cloud.google.com)
-2. Создать проект (или выбрать существующий)
-3. Включить два API:
-   - **API & Services → Library → Google Sheets API → Enable**
-   - **API & Services → Library → Google Drive API → Enable**
-4. Создать сервисный аккаунт:
-   - **IAM & Admin → Service Accounts → Create Service Account**
-   - Имя: например `cf-parser`, остальное по умолчанию
-5. Создать JSON-ключ:
-   - Открыть созданный аккаунт → вкладка **Keys** → **Add Key → Create new key → JSON**
-   - Скачать файл → переименовать в `credentials.json`
-   - Положить в корень проекта (`cf-pinterest-parser/credentials.json`)
-6. Дать доступ к Google Sheet:
-   - Открыть свой Google Sheet → **Поделиться**
-   - Вставить `client_email` из `credentials.json` → права **Редактор**
-
-### Шаг 3. Настроить переменные окружения
+Create `.env` from the example and add `credentials.json`:
 
 ```bash
 cp .env.example .env
 ```
 
-Открыть `.env` и заполнить:
+Minimum required variables:
 
 ```env
-GOOGLE_SHEET_ID=1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg
+GOOGLE_SHEET_ID=...
 CF_AFFILIATE_ID=7029352
 GOOGLE_CREDENTIALS_PATH=credentials.json
-PAGES_PER_RUN=3
 ```
 
-### Шаг 4. Запустить
+Important optional groups:
+- `VDS_*` for autonomous upload + publishing.
+- `PHONE_ACCOUNTS` for mapping ADB serials to Pinterest accounts.
+- `CF_LOG_*` for log level, retention, and log directory.
+- `CF_CRON_SCHEDULE` / `CF_RUN_COMMAND` for the Docker cron service.
+
+## Local setup
+
+### Python runtime
+The project has been exercised with Python `3.12` locally and `3.11` on Linux servers.
+
+### Install dependencies
 
 ```bash
-python main.py
+python3.12 -m pip install -r requirements.txt
+python3.12 -m playwright install chromium
 ```
 
-**Что произойдёт:**
-- Подключится к Google Sheets (smoke-test)
-- Создаст 7 вкладок: fonts, graphics, 3d-svg, 3d-printing, embroidery, laser-cutting, bundles
-- Спарсит по 3 страницы каждой категории через headless Chrome
-- Создаст Pinterest-пины в папке `output/`
-- Запишет новые товары в шит, пропустит дубли
-
----
-
-## Первоначальный массовый сбор
-
-Для первого запуска соберите больше товаров:
-
-**Через Docker:**
-```bash
-docker compose run --rm -e PAGES_PER_RUN=50 cf-parser
-```
-
-**Через Python (локально):**
-```bash
-# Windows
-set PAGES_PER_RUN=50 && python main.py
-
-# macOS / Linux
-PAGES_PER_RUN=50 python main.py
-```
-
-| Страниц | Товаров/категорию | Итого (7 ниш) |
-|---|---|---|
-| 3 (дефолт) | ~156 | ~7 мин |
-| 20 | ~700 | ~28 мин |
-| 50 | ~1800 | ~1 час |
-
-> ⚠️ `set PAGES_PER_RUN=50` сохраняется до закрытия cmd-окна.
-> Для сброса: `set PAGES_PER_RUN=3 && python main.py`
-
----
-
-## Уникализация изображений через ComfyUI (опционально)
-
-Если ComfyUI запущен локально, каждая картинка автоматически прогоняется через
-**Stable Diffusion img2img** (denoising 0.5) — Pinterest получает уникальные изображения.
-Если ComfyUI не запущен, скрипт молча переходит в Pillow-only режим.
-
-### Установка ComfyUI
+### Run smoke checks
 
 ```bash
-git clone https://github.com/comfyanonymous/ComfyUI
-cd ComfyUI
-pip install -r requirements.txt
+python3.12 test_components.py
 ```
 
-Скачать модель (SD 1.5, бесплатно):
-- [RealisticVision v5.1](https://civitai.com/models/4201) → положить в `ComfyUI/models/checkpoints/`
+The smoke script validates:
+- environment and credentials;
+- Google Sheets connectivity;
+- Playwright browser availability;
+- Creative Fabrica parsing attempt;
+- sample auto-pin generation from `test/extractor/input`;
+- scheduler dry-run;
+- optional local `adb` visibility.
 
-### Запуск
+## Daily production flow
+
+### 1. Generate the queue on a Mac or workstation
 
 ```bash
-# Терминал 1 — ComfyUI
-cd ComfyUI && python main.py --listen
-
-# Терминал 2 — парсер (сам подхватит ComfyUI)
-cd cf-pinterest-parser && python main.py
+python3.12 run.py prod-auto-pin \
+  --niche fonts \
+  --pages 10 \
+  --limit 300 \
+  --output output/prod/fonts_$(date +%Y%m%d) \
+  --upload-vds \
+  --sync-sheet
 ```
 
-### Настройка ComfyUI в .env
+This does the following:
+1. scrapes Creative Fabrica;
+2. downloads the preview cards;
+3. generates Pinterest pins and metadata;
+4. uploads `pin_01.jpg` to the VDS;
+5. writes queue metadata into the `fonts` sheet.
+
+### 2. Publish from the queue
+
+You have two production options:
+
+#### Option A. n8n + Pinterest API
+Use the workflows in `/n8n`:
+- `pinterest_cf_fonts_publish.json`
+- `pinterest_cf_fonts_cleanup.json`
+
+#### Option B. Android phone automation
+- `scheduler.py` runs 5 times per day with jitter;
+- every slot does `warmup -> random wait 5-15 min -> post`;
+- intended for a Linux server with a permanently attached Android phone.
+
+## Logging
+
+Every main entrypoint now writes both to stdout and a rotating file in `logs/`.
+
+Default files:
+- `logs/run.log`
+- `logs/phones.log`
+- `logs/scheduler.log`
+- `logs/test_components.log`
+- `logs/main.log`
+
+Controls:
 
 ```env
-COMFY_URL=http://127.0.0.1:8188
-COMFY_MODEL=realisticVisionV51.safetensors
-COMFY_DENOISE=0.50
-COMFY_STEPS=20
-COMFY_CFG=7.0
+CF_LOG_LEVEL=INFO
+CF_LOG_DIR=logs
+CF_LOG_MAX_BYTES=5242880
+CF_LOG_BACKUP_COUNT=5
 ```
 
----
+## Docker
 
-## Google Sheets — структура
+The repository includes three container roles:
+- `cf-runner` — one-off command runner;
+- `cf-batch-cron` — daily cron batch service;
+- `cf-phone-scheduler` — phone automation scheduler container.
 
-**Вкладки:** `fonts` `graphics` `3d-svg` `3d-printing` `embroidery` `laser-cutting` `bundles`
+See:
+- [DOCKER.md](DOCKER.md)
+- [DOCKER_QUICKSTART.md](DOCKER_QUICKSTART.md)
 
-**Колонки:**
+## Server deployment
 
-| Колонка | Описание |
-|---|---|
-| `title` | Название товара |
-| `image_url` | URL картинки с CDN Creative Fabrica |
-| `cf_url` | Прямая ссылка на страницу товара |
-| `affiliate_url` | Аффилиатная ссылка (`/ref/7029352/?sharedfrom=pdp`) |
-| `slug` | Slug товара — ключ для дедупликации |
-| `posted` | `FALSE` по умолчанию; меняется на `TRUE` после публикации пина |
-| `pin_id` | ID пина в Pinterest (заполняется после постинга) |
-| `created_at` | Дата/время добавления строки (UTC) |
+Phone automation deployment assets live in `deploy/`:
+- `deploy/cf-pinterest-scheduler.service`
+- `deploy/99-android-xiaomi.rules`
+- `deploy/bootstrap_phone_server.sh`
 
----
-
-## Деплой на сервер (Docker)
-
-### Вариант 1: Docker с встроенным cron (рекомендуется)
+Typical server flow:
 
 ```bash
-# На сервере
-git clone https://github.com/sshamanello/cf-pinterest-parser
-cd cf-pinterest-parser
-
-# Создать .env и credentials.json
-cp .env.example .env
-nano .env
-nano credentials.json
-
-# Собрать и запустить cron-демон
-docker compose build
-docker compose up -d cf-parser-cron
-
-# Проверить логи
-docker compose logs -f cf-parser-cron
-tail -f logs/cf-parser.log
+scp -r . nick@server:/home/nick/cf-pinterest-parser
+ssh nick@server
+cd /home/nick/cf-pinterest-parser
+bash deploy/bootstrap_phone_server.sh
 ```
 
-**Настройка расписания:** отредактируйте `CRON_SCHEDULE` в `.env`
+For the current Linux phone host, the active service name is:
+- `cf-pinterest-scheduler.service`
 
-```env
-CRON_SCHEDULE=0 9 * * *     # 09:00 UTC ежедневно (по умолчанию)
-CRON_SCHEDULE=0 */6 * * *   # каждые 6 часов
+## Known operational risks
+
+### 1. Creative Fabrica / Cloudflare
+Creative Fabrica is the least deterministic part of the stack. A workstation can occasionally get stuck on `Just a moment...` instead of returning product cards. The parser now logs challenge detection and waits longer before failing, but Cloudflare is still an external risk.
+
+### 2. Android ADB availability
+Phone automation is only reliable when the server permanently sees the device as `device` in `adb devices`. USB resets, revoked RSA trust, or disconnected cables will cause the scheduler to skip slots instead of crashing.
+
+### 3. Docker + USB
+The phone scheduler container is included, but for maximum reliability many setups still prefer host-level `systemd` + `adb` instead of containerized USB automation.
+
+## Validation status
+
+### Confirmed working historically
+- `2026-05-02` production batch:
+  - processed `500` items;
+  - generated `462` pins;
+  - rejected `38`;
+  - uploaded `462` JPG files to VDS;
+  - synced the sheet successfully.
+
+### Confirmed in this refresh pass (`2026-05-17`)
+- Google Sheets connectivity works.
+- Playwright Chromium is installed and launches.
+- Auto-pin smoke processing on local sample input works.
+- Scheduler dry-run works.
+- New phone server `192.168.10.105` has the scheduler service running.
+
+### Still requiring attention
+- Live Creative Fabrica parsing on the current local workstation is intermittently blocked by Cloudflare (`Just a moment...`).
+- Docker manifests have been updated, but a full `docker compose build` was not executed in this workstation because Docker CLI is not installed here.
+- The new phone server was alive during validation, but at the moment of the last check it had no `adb` device attached.
+
+## Useful commands
+
+```bash
+# Local smoke check
+python3.12 test_components.py
+
+# One-off production batch
+python3.12 run.py prod-auto-pin --niche fonts --pages 1 --limit 20 --output output/prod/fonts --upload-vds --sync-sheet
+
+# Scheduler dry-run
+python3.12 scheduler.py --dry-run
+
+# Phone warmup
+python3.12 run_phones.py warmup
 ```
 
-**Подробнее:** см. [DOCKER.md](DOCKER.md)
+## GitHub readiness checklist
 
----
-
-## Добавить новую категорию
-
-Открыть `config.py`, добавить строку в `CATEGORIES`:
-
-```python
-"new-niche": "https://www.creativefabrica.com/new-niche/",
-```
-
-Вкладка в шите создастся автоматически при следующем запуске.
-
----
-
-## Защита от дублей — три уровня
-
-| Уровень | Где | Механизм |
-|---|---|---|
-| Внутри страницы | браузер | JS `seen` Set в `_EXTRACT_JS` |
-| Между страницами одного запуска | `parser.py` | `seen_slugs` set в `parse_category()` |
-| Между запусками (ежедневный крон) | `sheets.py` | `get_existing_slugs()` читает шит перед записью |
-
-Один и тот же товар **никогда не попадёт в шит дважды**.
-
----
-
-## Важно — не коммитить
-
-```
-credentials.json   # ключ Google сервисного аккаунта
-.env               # локальные секреты
-output/            # сгенерированные Pinterest-пины
-logs/              # логи cron-демона
-```
-
-Все четыре уже в `.gitignore`.
-
----
-
-## Известные особенности
-
-- **Playwright вместо requests** — CF за Cloudflare, обычные HTTP дают 403
-- **Новый браузер на каждую страницу** — иначе CF блокирует страницу 2+
-- **Страница 1 fonts** — ~84 товара (Popular + New), страницы 2+ — ~36 каждая
-- **Lazy-load скролл** — embroidery/bundles/laser-cutting грузят карточки только после скролла
-- **noscript title bug** — для некоторых категорий `textContent` возвращает сырой HTML;
-  исправлено через извлечение `alt` атрибута regex'ом
-- **ComfyUI fallback** — если ComfyUI недоступен, изображения создаются без AI
-- **SSL warning при старте** — `SSLEOFError` от gspread нормален, авторетрай встроен
-- **Docker два режима** — `cf-parser` (разовый) и `cf-parser-cron` (автоматический)
+- [ ] `.env` is not committed.
+- [ ] `credentials.json` is not committed.
+- [ ] `output/` and `logs/` are excluded.
+- [ ] `README.md`, Docker docs, smoke report, and `INIT.md` reflect the current workflow.
+- [ ] VDS, Google Sheets, and Pinterest credentials are documented outside the repository.

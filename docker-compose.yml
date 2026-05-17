@@ -1,26 +1,34 @@
 services:
-  # Режим 1: Разовый запуск (docker compose run --rm cf-parser)
-  cf-parser:
+  cf-runner: &cf-base
     build: .
-    container_name: cf-parser
     env_file: .env
-    volumes:
-      - ./output:/app/output                          # пины сохраняются на хосте
-      - ./credentials.json:/app/credentials.json:ro  # ключ Google (read-only)
-    shm_size: '1gb'    # Chromium требует увеличенного /dev/shm
-    restart: "no"      # запускается вручную или по внешнему cron
-  
-  # Режим 2: Cron-демон внутри контейнера (docker compose up -d cf-parser-cron)
-  cf-parser-cron:
-    build: .
-    container_name: cf-parser-cron
-    env_file: .env
-    environment:
-      - CRON_SCHEDULE=0 9 * * *  # 09:00 UTC ежедневно (можно переопределить в .env)
     volumes:
       - ./output:/app/output
+      - ./logs:/app/logs
       - ./credentials.json:/app/credentials.json:ro
-      - ./logs:/var/log  # логи cron на хосте
-    shm_size: '1gb'
-    restart: unless-stopped  # автоперезапуск при падении
-    command: ["/docker-entrypoint.sh", "cron"]
+    shm_size: "1gb"
+    restart: "no"
+    command: ["run", "python", "run.py", "--help"]
+
+  cf-batch-cron:
+    <<: *cf-base
+    restart: unless-stopped
+    profiles: ["cron"]
+    environment:
+      CF_CRON_SCHEDULE: ${CF_CRON_SCHEDULE:-0 2 * * *}
+      CF_RUN_COMMAND: ${CF_RUN_COMMAND:-python run.py prod-auto-pin --niche fonts --pages 1 --limit 20 --output output/docker_prod --upload-vds --sync-sheet}
+    command: ["cron"]
+
+  cf-phone-scheduler:
+    <<: *cf-base
+    restart: unless-stopped
+    profiles: ["phone"]
+    privileged: true
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+      - /dev/bus/usb:/dev/bus/usb
+    environment:
+      CF_LOG_DIR: /app/logs
+    command: ["scheduler"]

@@ -32,10 +32,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
+from logging_utils import configure_logging
 
 ROOT = Path(__file__).resolve().parent
-LOG_DIR = ROOT / "logs"
-LOG_FILE = LOG_DIR / "scheduler.log"
 
 BASE_SLOTS = (
     (9, 0),
@@ -59,20 +58,7 @@ class Slot:
     scheduled_for: dt.datetime
     jitter_minutes: int
 
-
-def setup_logging() -> logging.Logger:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger("scheduler")
-    logger.setLevel(logging.INFO)
-    logger.handlers.clear()
-    handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    logger.addHandler(handler)
-    logger.propagate = False
-    return logger
-
-
-logger = setup_logging()
+logger = configure_logging("scheduler", default_log_name="scheduler.log")
 
 
 def build_daily_schedule(day: dt.date) -> list[Slot]:

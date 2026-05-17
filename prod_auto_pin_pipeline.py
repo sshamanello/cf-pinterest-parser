@@ -74,6 +74,7 @@ def _download_preview(product: dict, input_dir: Path) -> Path | None:
 
     path = input_dir / f"{slug}{suffix}"
     path.write_bytes(content)
+    logger.info("[%s] preview downloaded -> %s", slug, path)
     return path
 
 
@@ -149,6 +150,7 @@ exit [lindex $result 3]
 def _run_remote_mkdir() -> None:
     target = f"{VDS_SSH_USER}@{VDS_SSH_HOST}"
     cmd = _ssh_base_cmd() + [target, f"mkdir -p {VDS_REMOTE_DIR}"]
+    logger.info("Ensuring remote VDS directory exists: %s", VDS_REMOTE_DIR)
     _run_password_aware(cmd)
 
 
@@ -172,6 +174,7 @@ def _upload_file_to_vds(local_path: Path, slug: str) -> dict:
         cmd = _scp_base_cmd() + [str(local_path), target]
         _run_password_aware(cmd)
     except Exception as exc:
+        logger.error("[%s] VDS upload failed: %s", slug, exc)
         return {
             "vds_upload_status": "failed",
             "upload_error": str(exc),
@@ -179,6 +182,7 @@ def _upload_file_to_vds(local_path: Path, slug: str) -> dict:
             "public_image_url": public_url,
         }
 
+    logger.info("[%s] VDS upload complete -> %s", slug, public_url)
     return {
         "vds_upload_status": "uploaded",
         "upload_error": "",
@@ -191,6 +195,7 @@ def _upload_file_to_vds(local_path: Path, slug: str) -> dict:
 
 def upload_report_pins_to_vds(report_path: str | Path) -> int:
     report = Path(report_path)
+    logger.info("Uploading generated pins from report: %s", report)
     raw = json.loads(report.read_text(encoding="utf-8"))
     uploaded = 0
 
@@ -214,6 +219,7 @@ def upload_report_pins_to_vds(report_path: str | Path) -> int:
         "public_base_url": VDS_PUBLIC_BASE_URL,
     }
     report.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+    logger.info("VDS upload summary | uploaded=%d | report=%s", uploaded, report)
     return uploaded
 
 
@@ -231,8 +237,18 @@ def run_prod_auto_pin(
     input_dir = out_root / "_input"
     input_dir.mkdir(parents=True, exist_ok=True)
 
+    logger.info(
+        "Starting prod auto-pin | niche=%s | pages=%d | limit=%d | output=%s | upload_vds=%s",
+        niche,
+        pages,
+        limit,
+        out_root,
+        upload_vds,
+    )
+
     products = parse_category(CATEGORIES[niche], niche, pages=pages)
     selected = products[: max(0, int(limit))]
+    logger.info("Parsed %d products, selected first %d for processing", len(products), len(selected))
     downloaded_products: list[dict] = []
 
     for product in selected:
@@ -250,6 +266,14 @@ def run_prod_auto_pin(
 
     generated = sum(1 for r in results if r.status == "generated")
     rejected = sum(1 for r in results if r.status == "rejected")
+    logger.info(
+        "Prod auto-pin finished | downloaded=%d | generated=%d | rejected=%d | uploaded=%d | report=%s",
+        len(downloaded_products),
+        generated,
+        rejected,
+        uploaded,
+        report_path,
+    )
 
     return ProdAutoPinResult(
         niche=niche,

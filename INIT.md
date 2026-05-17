@@ -1,6 +1,6 @@
 # CF Pinterest Parser — Быстрая инициализация проекта
 
-> Последнее обновление: 2026-05-01
+> Последнее обновление: 2026-05-17
 > Этот файл содержит полный контекст проекта для быстрого восстановления работы
 
 ---
@@ -19,6 +19,101 @@
 ## Изменения 2026-04-21
 
 ## Изменения 2026-05-01
+
+## Изменения 2026-05-17
+
+- Проект приведён в более production-ready состояние перед подготовкой к GitHub:
+  - добавлен общий модуль логирования `logging_utils.py`,
+  - основные CLI-entrypoint'ы теперь пишут и в stdout, и в ротационные логи:
+    - `logs/run.log`
+    - `logs/main.log`
+    - `logs/phones.log`
+    - `logs/scheduler.log`
+    - `logs/test_components.log`
+  - логирование управляется env-переменными:
+    - `CF_LOG_LEVEL`
+    - `CF_LOG_DIR`
+    - `CF_LOG_MAX_BYTES`
+    - `CF_LOG_BACKUP_COUNT`
+- Обновлён `test_components.py` под реальную архитектуру 2026 года:
+  - проверяет env,
+  - credentials,
+  - Google Sheets,
+  - Playwright,
+  - live parser attempt,
+  - auto-pin smoke на локальном sample,
+  - `scheduler.py --dry-run`,
+  - optional `adb` visibility.
+- Улучшен `parser.py`:
+  - добавлена явная детекция Cloudflare challenge (`Just a moment...`, `checking your browser`, `verify you are human`),
+  - перед окончательным fail делается более длинное ожидание clearance,
+  - в логах теперь понятно, что это именно Cloudflare-блок, а не немой timeout.
+- Улучшено operational logging в runtime-модулях:
+  - `prod_auto_pin_pipeline.py` теперь подробнее логирует скачивание preview, VDS upload и общий summary batch-а,
+  - `phone_manager.py` логирует найденные ADB-устройства и cache-hit локальных изображений,
+  - `pinterest_post.py` логирует ключевые этапы Android flow:
+    - выбор ready pin из Sheet,
+    - открытие Pinterest,
+    - переход в gallery,
+    - выбор альбома,
+    - push файла,
+    - выбор board,
+    - cleanup файла на телефоне.
+- Полностью обновлена Docker-обвязка под текущую архитектуру:
+  - `Dockerfile` больше не завязан только на `main.py`,
+  - `docker-entrypoint.sh` поддерживает режимы:
+    - `run`
+    - `cron`
+    - `scheduler`
+    - `shell`
+  - `docker-compose.yml` теперь моделирует реальные роли:
+    - `cf-runner`
+    - `cf-batch-cron`
+    - `cf-phone-scheduler`
+  - в образ добавлены необходимые пакеты для текущего продового сценария:
+    - `adb`
+    - `cron`
+    - `openssh-client`
+    - `expect`
+    - Playwright Chromium.
+- Добавлены deployment-артефакты в `deploy/`:
+  - `deploy/cf-pinterest-scheduler.service`
+  - `deploy/99-android-xiaomi.rules`
+  - `deploy/bootstrap_phone_server.sh`
+- Обновлены документационные файлы под фактический pipeline:
+  - `README.md`
+  - `DOCKER.md`
+  - `DOCKER_QUICKSTART.md`
+  - `DOCKER_REPORT.md`
+  - `TEST_REPORT.md`
+  - `CLAUDE.md`
+- Состояние smoke-проверок на локальной машине после refresh-прохода:
+  - `PASS`:
+    - env
+    - credentials
+    - Google Sheets
+    - Playwright Chromium launch
+    - auto-pin sample
+    - scheduler dry-run
+  - `WARN`:
+    - на этом Mac сейчас нет локального `adb`, поэтому phone checks локально не выполнялись
+  - `FAIL`:
+    - live parser для Creative Fabrica на этом workstation упирается в Cloudflare challenge (`Just a moment...`)
+    - это честно зафиксировано как текущий внешний риск production-пайплайна.
+- Новая серверная точка для phone automation:
+  - актуальный хост: `192.168.10.105`
+  - состояние на момент последней проверки:
+    - `cf-pinterest-scheduler.service` запущен и `active (running)`,
+    - `scheduler.log` пишется,
+    - `adb devices -l` в момент проверки не показал подключённого устройства.
+- Важно:
+  - старый серверный контекст на `192.168.10.61` больше не считать актуальным для текущего развёртывания,
+  - для новой машины `10.105` нужна отдельная живая проверка с реально подключённым телефоном:
+    - `adb devices -l`
+    - `python run_phones.py warmup`
+    - `python run_phones.py post --tab fonts`
+- Docker-файлы и документация подготовлены, но в этой рабочей среде не было локального `docker` CLI,
+  поэтому полный `docker compose build/run` в рамках текущего прохода не выполнялся.
 
 - Поднят первый Linux-сервер для `feature/android-phone-automation`:
   - проект развёрнут в `/home/nick/cf-pinterest-parser`,

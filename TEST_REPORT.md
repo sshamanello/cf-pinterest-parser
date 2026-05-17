@@ -1,161 +1,112 @@
-# CF Pinterest Parser — Отчёт о тестировании
+# Validation report
 
-**Дата:** 2026-03-23  
-**Время:** 22:59 UTC+3  
-**Статус:** ✓ Все тесты пройдены
+**Date:** 2026-05-17
+**Branch:** `feature/android-phone-automation`
 
----
+This report reflects the latest validation pass done while preparing the project for GitHub and production documentation cleanup.
 
-## Результаты тестирования
+## Summary
 
-### ✓ Тест 1: Переменные окружения
-- GOOGLE_SHEET_ID: найдена
-- CF_AFFILIATE_ID: найдена
-- GOOGLE_CREDENTIALS_PATH: credentials.json
-- Опциональные переменные: не установлены (используются дефолтные значения)
+### Passing checks
+- Environment variables are present.
+- `credentials.json` is valid and readable.
+- Google Sheets connection works.
+- Playwright Chromium is installed and launches.
+- Local auto-pin processing on a sample preview image works.
+- `scheduler.py --dry-run` works.
+- New Linux phone server `192.168.10.105` has the scheduler service running.
 
-### ✓ Тест 2: Файл credentials.json
-- Файл найден: credentials.json
-- client_email: pin-bot@unified-icon-445607-a0.iam.gserviceaccount.com
-- JSON валиден
+### Warnings
+- Local workstation does not currently have `adb` installed, so direct phone checks were not executed from this Mac.
+- The new phone server was alive during the last check, but had no attached ADB device at that exact moment.
 
-### ✓ Тест 3: Google Sheets подключение
-- Таблица: CF Pinterest Bot
-- URL: https://docs.google.com/spreadsheets/d/1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg
-- Вкладок: 8 (Лист1, fonts, graphics, 3d-svg, 3d-printing, embroidery, laser-cutting, bundles)
-- Подключение успешно
+### Failing check
+- Live Creative Fabrica parsing on this workstation is currently intermittent because Cloudflare serves `Just a moment...` instead of product cards.
 
-### ✓ Тест 4: Playwright
-- Версия: 1.56.0
-- Chromium: установлен и работает
-- Тестовая загрузка CF: успешна (Cloudflare challenge пройден)
+## Detailed results
 
-### ✓ Тест 5: ComfyUI (опционально)
-- Статус: недоступен (http://127.0.0.1:8188)
-- Режим работы: Pillow-only (fallback)
-- Это нормально — ComfyUI опционален
+### Smoke check command
+```bash
+/Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 test_components.py
+```
 
-### ✓ Тест 6: Парсер
-- Категория: fonts (страница 1)
-- Найдено товаров: 84
-- Пример товара:
-  - title: Stay Chunky
-  - slug: stay-chunky-2
-  - image_url: https://cdn.creativefabrica.com/...
-- Парсер работает корректно
+### Result matrix
+- `env` -> PASS
+- `credentials` -> PASS
+- `google_sheets` -> PASS
+- `playwright` -> PASS
+- `parser` -> FAIL
+- `auto_pin_sample` -> PASS
+- `scheduler_dry_run` -> PASS
+- `phone_stack` -> WARN
 
-### ✓ Тест 7: Генерация изображений
-- Создан тестовый пин: output/test-pin-0.jpg
-- Размер файла: 57.4 KB
-- Размер изображения: 1000x1500 px (Pinterest 2:3)
-- Overlay применён корректно
+### Parser failure details
+Observed behavior:
+- Playwright opens Creative Fabrica successfully.
+- Page title resolves to `Just a moment...`.
+- Parser retries and now explicitly logs Cloudflare challenge detection.
+- Product selector still does not appear within the extended wait window.
 
----
+This is not a silent failure anymore; it is now surfaced clearly in logs.
 
-## Итоговая оценка
+## Historical production proof
 
-**7/7 тестов пройдено**
+The system has already succeeded on real content generation previously.
 
-Все критические компоненты работают:
-- ✓ Playwright обходит Cloudflare
-- ✓ Парсер извлекает 84 товара со страницы fonts
-- ✓ Google Sheets доступен для записи
-- ✓ Генерация Pinterest-пинов работает
-- ✓ Fallback на Pillow-only активен (ComfyUI не запущен)
+### Successful batch from 2026-05-02
+- processed: `500`
+- generated: `462`
+- rejected: `38`
+- VDS uploads: `462`
+- Google Sheet rows updated and marked ready
 
----
+Mode breakdown:
+- `card_mode`: `268`
+- `fallback_mode`: `194`
+- `extract_mode`: `0`
+- `reject_mode`: `38`
 
-## Что работает
+This confirms that the generation, VDS upload, and sheet synchronization pipeline has already worked in production conditions.
 
-1. **Парсинг Creative Fabrica**
-   - Playwright успешно обходит Cloudflare
-   - JS-экстрактор извлекает товары
-   - Дедупликация работает (84 уникальных товара)
+## Server check (`192.168.10.105`)
 
-2. **Обработка изображений**
-   - Pillow-only режим активен
-   - Overlay накладывается корректно
-   - Размер 1000x1500 px соблюдается
+Validation command used remotely:
+```bash
+adb devices -l
+tail -n 40 /home/nick/cf-pinterest-parser/logs/scheduler.log
+sudo systemctl status cf-pinterest-scheduler.service
+```
 
-3. **Google Sheets**
-   - Подключение успешно
-   - 8 вкладок найдено
-   - Готов к записи данных
+Observed status:
+- `cf-pinterest-scheduler.service` -> `active (running)`
+- scheduler log present
+- current daily schedule logged correctly
+- `adb devices` returned no attached devices at the moment of the check
 
-4. **Зависимости**
-   - Python 3.11.9
-   - Playwright 1.56.0
-   - Pillow 12.0.0
-   - gspread 6.1.2
-   - Все пакеты установлены
+## What was improved during this pass
+- Added shared rotating-file logging via `logging_utils.py`.
+- Upgraded smoke checks to match the real 2026 architecture.
+- Fixed smoke sample selection to ignore `.DS_Store` and hidden files.
+- Added more explicit parser logging around Cloudflare waits.
+- Added richer logging in production upload and Android posting helpers.
 
----
+## Current release readiness verdict
 
-## Что НЕ работает (некритично)
+### Ready
+- documentation cleanup
+- GitHub preparation
+- logging and operational runbooks
+- phone scheduler deployment assets
+- auto-pin smoke generation
+- Google Sheets connectivity
 
-1. **ComfyUI недоступен**
-   - Статус: не запущен
-   - Решение: автоматический fallback на Pillow-only
-   - Влияние: изображения не будут уникализироваться через AI
-   - Критичность: низкая (опциональная функция)
+### Not fully green yet
+- live Creative Fabrica scraping from the current workstation
+- Docker runtime build validation on an actual Docker-capable host
+- live ADB device presence on `192.168.10.105` during the check window
 
-2. **Тестовое изображение 404**
-   - URL в тесте устарел (404 Not Found)
-   - Решение: создан placeholder
-   - Влияние: только на тест, реальные товары работают
-   - Критичность: нет
-
----
-
-## Рекомендации
-
-### Для запуска в production:
-
-1. **Запустить основной скрипт:**
-   ```bash
-   python main.py
-   ```
-   Это запустит парсинг всех 7 категорий по 3 страницы каждая.
-
-2. **Для массового сбора (первый запуск):**
-   ```bash
-   set PAGES_PER_RUN=50 && python main.py
-   ```
-   Соберёт ~1800 товаров на категорию.
-
-3. **Для включения ComfyUI (опционально):**
-   ```bash
-   # Терминал 1
-   cd ComfyUI && python main.py --listen
-   
-   # Терминал 2
-   cd cf-pinterest-parser && python main.py
-   ```
-
-### Для мониторинга:
-
-- Логи выводятся в консоль
-- Проверяйте Google Sheet после каждого запуска
-- Папка output/ содержит сгенерированные пины
-
----
-
-## Файлы созданы
-
-1. **INIT.md** — полный контекст проекта для быстрого восстановления
-2. **test_components.py** — скрипт тестирования всех компонентов
-3. **TEST_REPORT.md** — этот отчёт
-
----
-
-## Следующие шаги
-
-1. ✓ Все компоненты протестированы
-2. ✓ Проект готов к запуску
-3. → Запустить `python main.py` для полного цикла
-4. → Проверить результаты в Google Sheets
-5. → (Опционально) Настроить ComfyUI для AI-уникализации
-
----
-
-**Заключение:** Проект полностью работоспособен и готов к production-запуску.
+## Recommended next checks
+1. Re-run parser smoke from the machine/IP that will actually do batch generation.
+2. Run `docker compose build` on a host with Docker installed.
+3. Re-attach the Android phone to `192.168.10.105` and confirm `adb devices -l` shows `device`.
+4. After that, run one real `run_phones.py warmup` and one real `run_phones.py post --tab fonts` on the new server.
