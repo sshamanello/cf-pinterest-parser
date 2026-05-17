@@ -43,7 +43,7 @@ WORKDIR /app
 
 COPY requirements.txt ./
 RUN pip install -r requirements.txt
-RUN playwright install chromium && playwright install-deps chromium
+RUN playwright install chromium
 
 COPY . .
 RUN mkdir -p /app/output /app/logs

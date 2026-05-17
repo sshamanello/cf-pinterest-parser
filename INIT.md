@@ -114,6 +114,22 @@
     - `python run_phones.py post --tab fonts`
 - Docker-файлы и документация подготовлены, но в этой рабочей среде не было локального `docker` CLI,
   поэтому полный `docker compose build/run` в рамках текущего прохода не выполнялся.
+- Во время реальной Docker-проверки на сервере `192.168.10.105` найден конфликт в `requirements.txt`:
+  - `droidrun==0.4.26` требовал `python-dotenv>=1.2.1`,
+  - проект был pinned на `python-dotenv==1.0.1`,
+  - при этом `droidrun` кодом не используется.
+- Исправление:
+  - `droidrun` удалён из `requirements.txt`,
+  - phone automation остаётся на `uiautomator2`,
+  - это выравнивает зависимости с реальным кодом и позволяет собирать Docker-образ без лишнего неиспользуемого слоя.
+- Во время серверной Docker-проверки найден ещё один build-blocker:
+  - `playwright install-deps chromium` внутри контейнера уходил в fallback для неподдерживаемой Ubuntu-ветки,
+  - на Debian `trixie` это приводило к зависанию/ошибкам на системном `apt`-шаге внутри Playwright.
+- Исправление:
+  - из `Dockerfile` убран `playwright install-deps chromium`,
+  - остаётся только `playwright install chromium`,
+  - системные Linux-библиотеки для Chromium продолжают ставиться нашим явным `apt-get` шагом выше,
+  - это делает build на сервере детерминированнее и убирает лишний “второй пакетный менеджер” внутри образа.
 
 - Поднят первый Linux-сервер для `feature/android-phone-automation`:
   - проект развёрнут в `/home/nick/cf-pinterest-parser`,
