@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,6 +24,31 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+
+SHEETS_RETRY_ATTEMPTS = int(os.environ.get("CF_SHEETS_RETRY_ATTEMPTS", "4"))
+SHEETS_RETRY_DELAY = float(os.environ.get("CF_SHEETS_RETRY_DELAY", "2"))
+
+
+def _call_with_retry(description: str, func, *args, **kwargs):
+    last_exc = None
+    for attempt in range(1, SHEETS_RETRY_ATTEMPTS + 1):
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= SHEETS_RETRY_ATTEMPTS:
+                break
+            delay = SHEETS_RETRY_DELAY * attempt
+            logger.warning(
+                "Sheets call failed (%s), retry %d/%d in %.1fs: %s",
+                description,
+                attempt,
+                SHEETS_RETRY_ATTEMPTS,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+    raise last_exc
 
 
 def _get_credentials() -> Credentials:
@@ -48,34 +74,46 @@ def get_sheet_client() -> gspread.Spreadsheet:
     """Return an authorised gspread Spreadsheet object."""
     creds = _get_credentials()
     client = gspread.authorize(creds)
-    return client.open_by_key(GOOGLE_SHEET_ID)
+    return _call_with_retry("open_by_key", client.open_by_key, GOOGLE_SHEET_ID)
 
 
 def ensure_tabs(spreadsheet: gspread.Spreadsheet) -> None:
     """Create any missing tabs and write the header row if the tab is new."""
-    existing = {ws.title for ws in spreadsheet.worksheets()}
+    existing = {ws.title for ws in _call_with_retry("worksheets", spreadsheet.worksheets)}
     for tab in SHEET_TABS:
         if tab not in existing:
             logger.info("Creating tab: %s", tab)
-            ws = spreadsheet.add_worksheet(title=tab, rows=1000, cols=len(COLUMNS))
-            ws.append_row(COLUMNS, value_input_option="RAW")
+            ws = _call_with_retry(
+                f"add_worksheet:{tab}",
+                spreadsheet.add_worksheet,
+                title=tab,
+                rows=1000,
+                cols=len(COLUMNS),
+            )
+            _call_with_retry(f"append_row:{tab}", ws.append_row, COLUMNS, value_input_option="RAW")
         else:
             # Make sure header row exists
-            ws = spreadsheet.worksheet(tab)
-            header = ws.row_values(1)
+            ws = _call_with_retry(f"worksheet:{tab}", spreadsheet.worksheet, tab)
+            header = _call_with_retry(f"row_values:{tab}", ws.row_values, 1)
             if header != COLUMNS:
                 logger.info("Updating header row in tab: %s", tab)
                 if len(header) < len(COLUMNS):
-                    ws.add_cols(len(COLUMNS) - len(header))
-                ws.update(f"A1:{_col_to_a1(len(COLUMNS))}1", [COLUMNS], value_input_option="RAW")
+                    _call_with_retry(f"add_cols:{tab}", ws.add_cols, len(COLUMNS) - len(header))
+                _call_with_retry(
+                    f"update_header:{tab}",
+                    ws.update,
+                    f"A1:{_col_to_a1(len(COLUMNS))}1",
+                    [COLUMNS],
+                    value_input_option="RAW",
+                )
 
 
 def get_existing_slugs(spreadsheet: gspread.Spreadsheet, tab: str) -> set[str]:
     """Return the set of slugs already present in the given tab."""
-    ws = spreadsheet.worksheet(tab)
+    ws = _call_with_retry(f"worksheet:{tab}", spreadsheet.worksheet, tab)
     try:
         slug_col_index = COLUMNS.index("slug") + 1  # gspread is 1-indexed
-        values = ws.col_values(slug_col_index)
+        values = _call_with_retry(f"col_values:{tab}:slug", ws.col_values, slug_col_index)
         # Skip header row
         return set(values[1:]) if len(values) > 1 else set()
     except Exception as exc:
@@ -92,7 +130,7 @@ def append_products(
     Append new products to the given tab, skipping duplicates by slug.
     Returns (new_count, skipped_count).
     """
-    ws = spreadsheet.worksheet(tab)
+    ws = _call_with_retry(f"worksheet:{tab}", spreadsheet.worksheet, tab)
     existing_slugs = get_existing_slugs(spreadsheet, tab)
 
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
@@ -119,19 +157,19 @@ def append_products(
         existing_slugs.add(slug)  # avoid intra-batch duplicates
 
     if rows_to_append:
-        ws.append_rows(rows_to_append, value_input_option="RAW")
+        _call_with_retry(f"append_rows:{tab}", ws.append_rows, rows_to_append, value_input_option="RAW")
 
     return len(rows_to_append), skipped
 
 
 def test_connection(spreadsheet: gspread.Spreadsheet) -> None:
     """Write a test value and delete it — quick smoke-test for Sheets access."""
-    ws = spreadsheet.worksheets()[0]
+    ws = _call_with_retry("worksheets", spreadsheet.worksheets)[0]
     test_val = f"[connection_test] {datetime.now(timezone.utc).isoformat()}"
-    ws.update_cell(1, 1, test_val)
+    _call_with_retry("update_cell:test", ws.update_cell, 1, 1, test_val)
     logger.info("Test write to '%s'!A1 succeeded.", ws.title)
     # Restore header
-    ws.update_cell(1, 1, COLUMNS[0])
+    _call_with_retry("update_cell:restore_header", ws.update_cell, 1, 1, COLUMNS[0])
     logger.info("Restored header in '%s'!A1.", ws.title)
 
 
@@ -145,11 +183,17 @@ def _col_to_a1(col_idx_1based: int) -> str:
 
 
 def _ensure_columns(ws: gspread.Worksheet, required_columns: list[str]) -> list[str]:
-    header = ws.row_values(1)
+    header = _call_with_retry(f"row_values:{ws.title}", ws.row_values, 1)
     if not header:
         if ws.col_count < len(required_columns):
-            ws.add_cols(len(required_columns) - ws.col_count)
-        ws.update(f"A1:{_col_to_a1(len(required_columns))}1", [required_columns], value_input_option="RAW")
+            _call_with_retry(f"add_cols:{ws.title}", ws.add_cols, len(required_columns) - ws.col_count)
+        _call_with_retry(
+            f"update_header:{ws.title}",
+            ws.update,
+            f"A1:{_col_to_a1(len(required_columns))}1",
+            [required_columns],
+            value_input_option="RAW",
+        )
         return required_columns
 
     merged = list(header)
@@ -158,10 +202,16 @@ def _ensure_columns(ws: gspread.Worksheet, required_columns: list[str]) -> list[
             merged.append(col)
 
     if ws.col_count < len(merged):
-        ws.add_cols(len(merged) - ws.col_count)
+        _call_with_retry(f"add_cols:{ws.title}", ws.add_cols, len(merged) - ws.col_count)
 
     if merged != header:
-        ws.update(f"A1:{_col_to_a1(len(merged))}1", [merged], value_input_option="RAW")
+        _call_with_retry(
+            f"update_header:{ws.title}",
+            ws.update,
+            f"A1:{_col_to_a1(len(merged))}1",
+            [merged],
+            value_input_option="RAW",
+        )
     return merged
 
 
@@ -196,7 +246,7 @@ def upsert_auto_pin_report(
     Upsert auto-pin results into a tab by `slug`.
     Returns (inserted_count, updated_count).
     """
-    ws = spreadsheet.worksheet(tab)
+    ws = _call_with_retry(f"worksheet:{tab}", spreadsheet.worksheet, tab)
     required = COLUMNS + [
         "pin_path",
         "mode",
@@ -221,7 +271,7 @@ def upsert_auto_pin_report(
     if not items:
         return 0, 0
 
-    all_values = ws.get_all_values()
+    all_values = _call_with_retry(f"get_all_values:{tab}", ws.get_all_values)
     slug_to_row: dict[str, int] = {}
     for idx, row in enumerate(all_values[1:], start=2):
         value = row[col["slug"] - 1] if len(row) >= col["slug"] else ""
@@ -320,8 +370,8 @@ def upsert_auto_pin_report(
             next_row += 1
 
     if updates:
-        ws.batch_update(updates, value_input_option="RAW")
+        _call_with_retry(f"batch_update:{tab}", ws.batch_update, updates, value_input_option="RAW")
     if rows_to_append:
-        ws.append_rows(rows_to_append, value_input_option="RAW")
+        _call_with_retry(f"append_rows:{tab}:upsert", ws.append_rows, rows_to_append, value_input_option="RAW")
 
     return inserted, updated

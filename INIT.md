@@ -1,6 +1,6 @@
 # CF Pinterest Parser — Быстрая инициализация проекта
 
-> Последнее обновление: 2026-05-17
+> Последнее обновление: 2026-05-20
 > Этот файл содержит полный контекст проекта для быстрого восстановления работы
 
 ---
@@ -21,6 +21,58 @@
 ## Изменения 2026-05-01
 
 ## Изменения 2026-05-17
+
+## Изменения 2026-05-20
+
+- Начата полноценная Docker-проверка уже на новом сервере `192.168.10.122`:
+  - проект загружен в `/home/nick/cf-pinterest-parser`,
+  - на сервер установлен `docker-compose` (package `docker-compose`, version `2.26.1-4`),
+  - `docker-compose config` проходит успешно.
+- Во время первой server-side сборки на `10.122` был transient сбой доступа Docker к Docker Hub:
+  - `docker-compose build` упал на `failed to fetch anonymous token` для `python:3.11-slim`,
+  - прямой `curl` до `auth.docker.io` и `registry-1.docker.io` с сервера отвечал нормально,
+  - повторный `docker pull python:3.11-slim` прошёл успешно,
+  - после этого `docker-compose build cf-runner` продолжился штатно.
+- Найден и исправлен реальный runtime-дефект контейнера:
+  - `docker-compose run --rm cf-runner run python test_components.py` падал на
+    `ImportError: libGL.so.1: cannot open shared object file`,
+  - причина: для `opencv-python` в образе не хватало системной библиотеки `libgl1`.
+- Исправление:
+  - в `Dockerfile` в apt-зависимости добавлен `libgl1`,
+  - это обязательный пакет для smoke/production запуска `opencv` внутри Docker на Linux.
+- Во время live e2e-прогона на `10.122` найден ещё один infrastructure-узкий момент:
+  - VDS upload внутри контейнера сначала не работал из-за серверного `.env`:
+    - `VDS_SSH_HOST` был задан как локальный alias `cf-pinterest-vds`,
+    - `VDS_SSH_PASSWORD` на новом сервере был пустым.
+  - после перевода `VDS_SSH_HOST` на реальный IP `87.120.219.4` и заполнения пароля выяснилось,
+    что ветка `expect` внутри контейнера остаётся менее надёжной, чем `sshpass`.
+- Исправление для контейнера:
+  - в `Dockerfile` добавлен `sshpass`,
+  - upload-код в `prod_auto_pin_pipeline.py` уже умеет автоматически предпочитать `sshpass`,
+  - это делает VDS upload стабильнее и избавляет от fragile `expect`-обвязки в production-контейнере.
+- Во время финального e2e-прогона подтвердился ещё один сетевой риск:
+  - после успешного VDS upload Google Sheets иногда рвёт соединение на `open_by_key` / `row_values` /
+    `get_all_values` с ошибками уровня `RemoteDisconnected`, `ConnectionResetError`, `SSLEOFError`.
+- Исправление:
+  - в `sheets.py` добавлена retry-обвязка `_call_with_retry(...)`,
+  - ретраи управляются env-переменными:
+    - `CF_SHEETS_RETRY_ATTEMPTS` (default `4`)
+    - `CF_SHEETS_RETRY_DELAY` (default `2`)
+  - под retry заведены основные сетевые вызовы `gspread`:
+    - `open_by_key`
+    - `worksheets`
+    - `worksheet`
+    - `row_values`
+    - `col_values`
+    - `get_all_values`
+    - `append_row(s)`
+    - `batch_update`
+    - `update`
+    - `update_cell`
+  - цель: контейнер не должен падать от единичного сетевого сброса при sync в Google Sheet.
+- Важный operational вывод:
+  - Docker-пайплайн теперь нужно валидировать именно на сервере, а не на Mac,
+  - потому что сетевые и системные различия (`docker hub auth`, Linux shared libs) проявляются только в реальном Linux-окружении.
 
 - Проект приведён в более production-ready состояние перед подготовкой к GitHub:
   - добавлен общий модуль логирования `logging_utils.py`,

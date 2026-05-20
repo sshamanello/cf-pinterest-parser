@@ -18,6 +18,7 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     libatk-bridge2.0-0 \
     libatk1.0-0 \
+    libgl1 \
     libcups2 \
     libdbus-1-3 \
     libdrm2 \
@@ -34,6 +35,7 @@ RUN apt-get update && apt-get install -y \
     libxtst6 \
     openssh-client \
     procps \
+    sshpass \
     wget \
     xdg-utils \
     --no-install-recommends && \
