@@ -86,17 +86,20 @@ def _build_page_url(base_url: str, page: int) -> str:
     return base_url.rstrip("/") + f"/page/{page}/"
 
 
-def parse_category(url: str, niche: str, pages: int = PAGES_PER_RUN) -> list[dict]:
+def parse_category(url: str, niche: str, pages: int = PAGES_PER_RUN, start_page: int = 1) -> list[dict]:
     """
-    Scrape `pages` pages of a CF category using a real Chromium browser.
+    Scrape `pages` pages of a CF category using a real Chromium browser,
+    starting from `start_page`.
     Returns a list of product dicts with keys:
         title, image_url, cf_url, affiliate_url, slug, niche
     """
     all_products: list[dict] = []
     seen_slugs: set[str] = set()  # dedup across pages within one run
+    first_page = max(1, int(start_page))
+    last_page = first_page + max(0, int(pages)) - 1
 
     with sync_playwright() as pw:
-        for page_num in range(1, pages + 1):
+        for page_num in range(first_page, last_page + 1):
             page_url = _build_page_url(url, page_num)
             logger.info("[%s] Fetching page %d: %s", niche, page_num, page_url)
 

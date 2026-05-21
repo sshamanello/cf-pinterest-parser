@@ -258,7 +258,9 @@ def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync
         upload_vds=upload_vds,
     )
     logger.info(
-        "[OK] Prod auto-pin | parsed: %d | selected: %d | downloaded: %d | generated: %d | rejected: %d | uploaded: %d",
+        "[OK] Prod auto-pin | pages: %d-%d | parsed: %d | selected: %d | downloaded: %d | generated: %d | rejected: %d | uploaded: %d",
+        result.start_page,
+        result.end_page,
         result.parsed_count,
         result.selected_count,
         result.downloaded_count,

@@ -25,11 +25,15 @@ VDS_SSH_PASSWORD = os.environ.get("VDS_SSH_PASSWORD", "")
 VDS_REMOTE_DIR = os.environ.get("VDS_REMOTE_DIR", "/var/www/pins/ready")
 VDS_PUBLIC_BASE_URL = os.environ.get("VDS_PUBLIC_BASE_URL", "")
 SKIP_EXISTING_SHEET = os.environ.get("CF_SKIP_EXISTING_SHEET", "true").strip().lower() not in {"0", "false", "no"}
+PAGE_CURSOR_FILE = Path(os.environ.get("CF_PAGE_CURSOR_FILE", "output/_state/page_cursor.json"))
+PAGE_CURSOR_MAX = max(1, int(os.environ.get("CF_PAGE_CURSOR_MAX", "100")))
 
 
 @dataclass
 class ProdAutoPinResult:
     niche: str
+    start_page: int
+    end_page: int
     parsed_count: int
     selected_count: int
     downloaded_count: int
@@ -240,6 +244,65 @@ def _get_existing_sheet_slugs(niche: str) -> set[str]:
         return set()
 
 
+def _load_page_cursor_state() -> dict:
+    if not PAGE_CURSOR_FILE.exists():
+        return {}
+
+    try:
+        raw = json.loads(PAGE_CURSOR_FILE.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.warning("Could not read page cursor state from %s: %s", PAGE_CURSOR_FILE, exc)
+        return {}
+
+    return raw if isinstance(raw, dict) else {}
+
+
+def _save_page_cursor_state(state: dict) -> None:
+    PAGE_CURSOR_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PAGE_CURSOR_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _resolve_page_window(niche: str, pages: int) -> tuple[int, int]:
+    window_size = max(1, int(pages))
+    state = _load_page_cursor_state()
+    niche_state = state.get(niche, {}) if isinstance(state.get(niche), dict) else {}
+    start_page = max(1, int(niche_state.get("next_start_page", 1)))
+    end_page = start_page + window_size - 1
+    logger.info(
+        "Resolved page window | niche=%s | current=%d-%d | cursor_file=%s | max_page=%d",
+        niche,
+        start_page,
+        end_page,
+        PAGE_CURSOR_FILE,
+        PAGE_CURSOR_MAX,
+    )
+    return start_page, end_page
+
+
+def _advance_page_window(niche: str, start_page: int, end_page: int) -> int:
+    next_start_page = end_page + 1
+    if next_start_page > PAGE_CURSOR_MAX:
+        next_start_page = 1
+
+    state = _load_page_cursor_state()
+    state[niche] = {
+        "next_start_page": next_start_page,
+        "last_start_page": start_page,
+        "last_end_page": end_page,
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    _save_page_cursor_state(state)
+    logger.info(
+        "Advanced page cursor | niche=%s | completed=%d-%d | next_start=%d | cursor_file=%s",
+        niche,
+        start_page,
+        end_page,
+        next_start_page,
+        PAGE_CURSOR_FILE,
+    )
+    return next_start_page
+
+
 def run_prod_auto_pin(
     niche: str = "fonts",
     limit: int = 20,
@@ -263,7 +326,8 @@ def run_prod_auto_pin(
         upload_vds,
     )
 
-    products = parse_category(CATEGORIES[niche], niche, pages=pages)
+    start_page, end_page = _resolve_page_window(niche, pages)
+    products = parse_category(CATEGORIES[niche], niche, pages=pages, start_page=start_page)
     existing_slugs = _get_existing_sheet_slugs(niche)
     selected: list[dict] = []
     skipped_existing = 0
@@ -281,8 +345,10 @@ def run_prod_auto_pin(
             break
 
     logger.info(
-        "Parsed %d products | existing skipped=%d | selected new=%d | limit=%d",
+        "Parsed %d products | page_window=%d-%d | existing skipped=%d | selected new=%d | limit=%d",
         len(products),
+        start_page,
+        end_page,
         skipped_existing,
         len(selected),
         hard_limit,
@@ -312,9 +378,12 @@ def run_prod_auto_pin(
         uploaded,
         report_path,
     )
+    _advance_page_window(niche, start_page, end_page)
 
     return ProdAutoPinResult(
         niche=niche,
+        start_page=start_page,
+        end_page=end_page,
         parsed_count=len(products),
         selected_count=len(selected),
         downloaded_count=len(downloaded_products),

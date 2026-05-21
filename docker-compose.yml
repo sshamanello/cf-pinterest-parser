@@ -18,6 +18,8 @@ services:
       CF_CRON_SCHEDULE: ${CF_CRON_SCHEDULE:-15 */4 * * *}
       CF_RUN_COMMAND: ${CF_RUN_COMMAND:-python run.py prod-auto-pin --niche fonts --pages 10 --limit 10 --output output/docker_prod --upload-vds --sync-sheet}
       CF_SKIP_EXISTING_SHEET: ${CF_SKIP_EXISTING_SHEET:-true}
+      CF_PAGE_CURSOR_FILE: ${CF_PAGE_CURSOR_FILE:-output/_state/page_cursor.json}
+      CF_PAGE_CURSOR_MAX: ${CF_PAGE_CURSOR_MAX:-100}
     command: ["cron"]
 
   cf-phone-scheduler:
