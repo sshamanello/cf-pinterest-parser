@@ -4,8 +4,8 @@ set -euo pipefail
 APP_DIR=/app
 LOG_DIR=${CF_LOG_DIR:-/app/logs}
 CRON_LOG_FILE=${CF_CRON_LOG_FILE:-$LOG_DIR/docker-cron.log}
-CRON_SCHEDULE=${CF_CRON_SCHEDULE:-0 2 * * *}
-RUN_COMMAND_DEFAULT="python run.py prod-auto-pin --niche fonts --pages 1 --limit 20 --output output/docker_prod --upload-vds --sync-sheet"
+CRON_SCHEDULE=${CF_CRON_SCHEDULE:-15 */4 * * *}
+RUN_COMMAND_DEFAULT="python run.py prod-auto-pin --niche fonts --pages 10 --limit 10 --output output/docker_prod --upload-vds --sync-sheet"
 RUN_COMMAND=${CF_RUN_COMMAND:-$RUN_COMMAND_DEFAULT}
 
 mkdir -p "$APP_DIR/output" "$LOG_DIR"

@@ -14,6 +14,7 @@ from pathlib import Path
 from auto_pin_pipeline import run_auto_pin_batch
 from config import CATEGORIES
 from parser import parse_category
+from sheets import ensure_tabs, get_existing_slugs, get_sheet_client
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ VDS_SSH_PORT = int(os.environ.get("VDS_SSH_PORT", "22"))
 VDS_SSH_PASSWORD = os.environ.get("VDS_SSH_PASSWORD", "")
 VDS_REMOTE_DIR = os.environ.get("VDS_REMOTE_DIR", "/var/www/pins/ready")
 VDS_PUBLIC_BASE_URL = os.environ.get("VDS_PUBLIC_BASE_URL", "")
+SKIP_EXISTING_SHEET = os.environ.get("CF_SKIP_EXISTING_SHEET", "true").strip().lower() not in {"0", "false", "no"}
 
 
 @dataclass
@@ -223,6 +225,21 @@ def upload_report_pins_to_vds(report_path: str | Path) -> int:
     return uploaded
 
 
+def _get_existing_sheet_slugs(niche: str) -> set[str]:
+    if not SKIP_EXISTING_SHEET:
+        return set()
+
+    try:
+        spreadsheet = get_sheet_client()
+        ensure_tabs(spreadsheet)
+        slugs = get_existing_slugs(spreadsheet, niche)
+        logger.info("Loaded %d existing slugs from sheet tab '%s'", len(slugs), niche)
+        return slugs
+    except Exception as exc:
+        logger.warning("Could not load existing slugs from sheet for niche '%s': %s", niche, exc)
+        return set()
+
+
 def run_prod_auto_pin(
     niche: str = "fonts",
     limit: int = 20,
@@ -247,8 +264,29 @@ def run_prod_auto_pin(
     )
 
     products = parse_category(CATEGORIES[niche], niche, pages=pages)
-    selected = products[: max(0, int(limit))]
-    logger.info("Parsed %d products, selected first %d for processing", len(products), len(selected))
+    existing_slugs = _get_existing_sheet_slugs(niche)
+    selected: list[dict] = []
+    skipped_existing = 0
+    hard_limit = max(0, int(limit))
+
+    for product in products:
+        slug = str(product.get("slug", "")).strip()
+        if not slug:
+            continue
+        if slug in existing_slugs:
+            skipped_existing += 1
+            continue
+        selected.append(product)
+        if len(selected) >= hard_limit:
+            break
+
+    logger.info(
+        "Parsed %d products | existing skipped=%d | selected new=%d | limit=%d",
+        len(products),
+        skipped_existing,
+        len(selected),
+        hard_limit,
+    )
     downloaded_products: list[dict] = []
 
     for product in selected:
