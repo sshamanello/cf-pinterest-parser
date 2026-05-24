@@ -27,6 +27,9 @@ VDS_PUBLIC_BASE_URL = os.environ.get("VDS_PUBLIC_BASE_URL", "")
 SKIP_EXISTING_SHEET = os.environ.get("CF_SKIP_EXISTING_SHEET", "true").strip().lower() not in {"0", "false", "no"}
 PAGE_CURSOR_FILE = Path(os.environ.get("CF_PAGE_CURSOR_FILE", "output/_state/page_cursor.json"))
 PAGE_CURSOR_MAX = max(1, int(os.environ.get("CF_PAGE_CURSOR_MAX", "100")))
+ADAPTIVE_ENABLED = os.environ.get("CF_ADAPTIVE_ENABLED", "true").strip().lower() not in {"0", "false", "no"}
+ADAPTIVE_TARGET_NEW = max(1, int(os.environ.get("CF_ADAPTIVE_TARGET_NEW", "50")))
+ADAPTIVE_MAX_PAGES_PER_RUN = max(1, int(os.environ.get("CF_ADAPTIVE_MAX_PAGES_PER_RUN", "300")))
 
 
 @dataclass
@@ -262,24 +265,66 @@ def _save_page_cursor_state(state: dict) -> None:
     PAGE_CURSOR_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _resolve_page_window(niche: str, pages: int) -> tuple[int, int]:
-    window_size = max(1, int(pages))
+def _resolve_window_size(niche_state: dict, pages: int) -> int:
+    base_pages = max(1, int(pages))
+    if not ADAPTIVE_ENABLED:
+        return base_pages
+
+    last_window_pages = max(1, int(niche_state.get("last_window_pages", base_pages)))
+    last_selected = max(0, int(niche_state.get("last_selected_count", 0)))
+    target = ADAPTIVE_TARGET_NEW
+    max_pages = max(base_pages, ADAPTIVE_MAX_PAGES_PER_RUN)
+
+    if last_selected < target and last_window_pages < max_pages:
+        next_pages = min(max_pages, last_window_pages * 2)
+        logger.info(
+            "Adaptive pages upshift | last_selected=%d < target=%d | pages %d -> %d",
+            last_selected,
+            target,
+            last_window_pages,
+            next_pages,
+        )
+        return next_pages
+
+    if last_selected >= target and last_window_pages > base_pages:
+        logger.info(
+            "Adaptive pages hold | last_selected=%d >= target=%d | pages=%d",
+            last_selected,
+            target,
+            last_window_pages,
+        )
+        return last_window_pages
+
+    return base_pages
+
+
+def _resolve_page_window(niche: str, pages: int) -> tuple[int, int, int]:
     state = _load_page_cursor_state()
     niche_state = state.get(niche, {}) if isinstance(state.get(niche), dict) else {}
+    window_size = _resolve_window_size(niche_state, pages)
     start_page = max(1, int(niche_state.get("next_start_page", 1)))
     end_page = start_page + window_size - 1
     logger.info(
-        "Resolved page window | niche=%s | current=%d-%d | cursor_file=%s | max_page=%d",
+        "Resolved page window | niche=%s | current=%d-%d | window_size=%d | cursor_file=%s | max_page=%d",
         niche,
         start_page,
         end_page,
+        window_size,
         PAGE_CURSOR_FILE,
         PAGE_CURSOR_MAX,
     )
-    return start_page, end_page
+    return start_page, end_page, window_size
 
 
-def _advance_page_window(niche: str, start_page: int, end_page: int) -> int:
+def _advance_page_window(
+    niche: str,
+    start_page: int,
+    end_page: int,
+    window_size: int,
+    selected_count: int,
+    downloaded_count: int,
+    parsed_count: int,
+) -> int:
     next_start_page = end_page + 1
     if next_start_page > PAGE_CURSOR_MAX:
         next_start_page = 1
@@ -289,15 +334,22 @@ def _advance_page_window(niche: str, start_page: int, end_page: int) -> int:
         "next_start_page": next_start_page,
         "last_start_page": start_page,
         "last_end_page": end_page,
+        "last_window_pages": window_size,
+        "last_selected_count": selected_count,
+        "last_downloaded_count": downloaded_count,
+        "last_parsed_count": parsed_count,
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     _save_page_cursor_state(state)
     logger.info(
-        "Advanced page cursor | niche=%s | completed=%d-%d | next_start=%d | cursor_file=%s",
+        "Advanced page cursor | niche=%s | completed=%d-%d | next_start=%d | pages=%d | selected=%d | downloaded=%d | cursor_file=%s",
         niche,
         start_page,
         end_page,
         next_start_page,
+        window_size,
+        selected_count,
+        downloaded_count,
         PAGE_CURSOR_FILE,
     )
     return next_start_page
@@ -326,8 +378,8 @@ def run_prod_auto_pin(
         upload_vds,
     )
 
-    start_page, end_page = _resolve_page_window(niche, pages)
-    products = parse_category(CATEGORIES[niche], niche, pages=pages, start_page=start_page)
+    start_page, end_page, window_size = _resolve_page_window(niche, pages)
+    products = parse_category(CATEGORIES[niche], niche, pages=window_size, start_page=start_page)
     existing_slugs = _get_existing_sheet_slugs(niche)
     selected: list[dict] = []
     skipped_existing = 0
@@ -378,7 +430,15 @@ def run_prod_auto_pin(
         uploaded,
         report_path,
     )
-    _advance_page_window(niche, start_page, end_page)
+    _advance_page_window(
+        niche=niche,
+        start_page=start_page,
+        end_page=end_page,
+        window_size=window_size,
+        selected_count=len(selected),
+        downloaded_count=len(downloaded_products),
+        parsed_count=len(products),
+    )
 
     return ProdAutoPinResult(
         niche=niche,

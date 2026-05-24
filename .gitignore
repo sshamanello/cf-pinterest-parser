@@ -4,6 +4,7 @@ credentials.json
 *.pyc
 __pycache__/
 .pycache_local/
+.numba_cache/
 output/
 test/extractor/output/
 logs/

@@ -14,6 +14,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
+
+# Avoid numba cache locator failures in some system Python installs.
+_NUMBA_CACHE_DIR = Path(__file__).resolve().parent / ".numba_cache"
+os.environ.setdefault("NUMBA_CACHE_DIR", str(_NUMBA_CACHE_DIR))
+_NUMBA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
 from rembg import remove, new_session
 
 logger = logging.getLogger(__name__)
