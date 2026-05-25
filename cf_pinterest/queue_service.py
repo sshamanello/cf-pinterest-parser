@@ -158,3 +158,25 @@ def export_n8n_ready_csv(
         for row in rows:
             writer.writerow({key: row.get(key, "") for key in fieldnames})
     return len(rows)
+
+
+def export_n8n_ready_json(
+    db_path: str | Path,
+    niche: str,
+    output_path: str | Path,
+    limit: int = 500,
+    profile: str = "n8n_default",
+    statuses: tuple[str, ...] = ("generated", "uploaded"),
+) -> int:
+    if profile not in N8N_EXPORT_PROFILES:
+        supported = ", ".join(sorted(N8N_EXPORT_PROFILES.keys()))
+        raise ValueError(f"Unknown export profile '{profile}'. Supported: {supported}")
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with connect_db(db_path) as conn:
+        rows = list_publish_items_for_n8n(conn, niche=niche, limit=limit, statuses=statuses)
+
+    fieldnames = N8N_EXPORT_PROFILES[profile]
+    payload = [{key: row.get(key, "") for key in fieldnames} for row in rows]
+    out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return len(payload)

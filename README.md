@@ -35,8 +35,9 @@ Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.
 - `python run.py import-queue-file --file <queue.csv|queue.xlsx> --tab fonts --db-path output/_state/queue.db`
   Imports historical/exported spreadsheet data into local queue DB.
 - `python run.py export-n8n-queue --tab fonts --output output/n8n/fonts_publish.csv`
-  Exports final publish dataset for n8n ingestion.
+  Exports final publish dataset for n8n ingestion (CSV by default).
   Optional flags:
+  - `--format csv|json`
   - `--profile n8n_default|n8n_minimal`
   - `--statuses generated,uploaded` (or empty for all statuses)
 

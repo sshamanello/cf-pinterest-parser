@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 from cf_pinterest.queue_service import (
+    export_n8n_ready_json,
     export_n8n_ready_csv,
     get_queue_summary,
     import_sheet_file_to_queue_db,
@@ -295,8 +296,16 @@ def cmd_import_queue_file(file_path: str, tab: str, db_path: str):
     )
 
 
-def cmd_export_n8n_queue(tab: str, db_path: str, output_path: str, limit: int, profile: str, statuses: str):
-    """Export final publish table into CSV for n8n ingestion."""
+def cmd_export_n8n_queue(
+    tab: str,
+    db_path: str,
+    output_path: str,
+    limit: int,
+    profile: str,
+    statuses: str,
+    export_format: str,
+):
+    """Export final publish table into CSV/JSON for n8n ingestion."""
     logger.info("Mode: export n8n queue")
     logger.info("Tab: %s", tab)
     logger.info("DB path: %s", db_path)
@@ -304,15 +313,26 @@ def cmd_export_n8n_queue(tab: str, db_path: str, output_path: str, limit: int, p
     logger.info("Profile: %s", profile)
     status_values = tuple(x.strip() for x in statuses.split(",") if x.strip())
     logger.info("Statuses: %s", ",".join(status_values) if status_values else "all")
-    exported = export_n8n_ready_csv(
-        db_path=db_path,
-        niche=tab,
-        output_path=output_path,
-        limit=limit,
-        profile=profile,
-        statuses=status_values,
-    )
-    logger.info("[OK] n8n CSV export complete | rows=%d", exported)
+    if export_format == "json":
+        exported = export_n8n_ready_json(
+            db_path=db_path,
+            niche=tab,
+            output_path=output_path,
+            limit=limit,
+            profile=profile,
+            statuses=status_values,
+        )
+        logger.info("[OK] n8n JSON export complete | rows=%d", exported)
+    else:
+        exported = export_n8n_ready_csv(
+            db_path=db_path,
+            niche=tab,
+            output_path=output_path,
+            limit=limit,
+            profile=profile,
+            statuses=status_values,
+        )
+        logger.info("[OK] n8n CSV export complete | rows=%d", exported)
 
 
 def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync_sheet: bool, upload_vds: bool):
@@ -592,6 +612,12 @@ Examples:
         default="generated,uploaded",
         help="Comma-separated statuses to export; empty means all",
     )
+    p_export.add_argument(
+        "--format",
+        default="csv",
+        choices=["csv", "json"],
+        help="Export format (default: csv)",
+    )
     p_prod = subparsers.add_parser("prod-auto-pin", help="Production auto-pin run from Creative Fabrica")
     p_prod.add_argument("--niche", "-n", default="fonts", choices=list(CATEGORIES.keys()), help="Category tab (default: fonts)")
     p_prod.add_argument("--limit", "-l", type=int, default=20, help="How many products to process (default: 20)")
@@ -658,6 +684,7 @@ Examples:
             limit=args.limit,
             profile=args.profile,
             statuses=args.statuses,
+            export_format=args.format,
         )
     elif args.command == "prod-auto-pin":
         cmd_prod_auto_pin(

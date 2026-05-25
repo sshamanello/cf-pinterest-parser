@@ -4,7 +4,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from cf_pinterest.queue_service import export_n8n_ready_csv, import_sheet_file_to_queue_db, sync_report_to_queue_db
+from cf_pinterest.queue_service import (
+    export_n8n_ready_csv,
+    export_n8n_ready_json,
+    import_sheet_file_to_queue_db,
+    sync_report_to_queue_db,
+)
 
 
 class QueueDbTestCase(unittest.TestCase):
@@ -102,6 +107,21 @@ class QueueDbTestCase(unittest.TestCase):
             self.assertIn("title,description,image_url,target_url", raw_min.splitlines()[0])
             self.assertIn("Beta Font", raw_min)
             self.assertIn("Gamma Font", raw_min)
+
+            export_path_json = tmp_path / "n8n_default.json"
+            exported_json = export_n8n_ready_json(
+                db_path=db_path,
+                niche="fonts",
+                output_path=export_path_json,
+                limit=100,
+                profile="n8n_default",
+                statuses=("generated",),
+            )
+            self.assertEqual(exported_json, 1)
+            payload = json.loads(export_path_json.read_text(encoding="utf-8"))
+            self.assertEqual(len(payload), 1)
+            self.assertEqual(payload[0]["title"], "Beta Font")
+            self.assertEqual(payload[0]["status"], "generated")
 
 
 if __name__ == "__main__":
