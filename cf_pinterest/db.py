@@ -242,3 +242,56 @@ def list_publish_items_for_n8n(
     params.append(max(1, int(limit)))
     rows = conn.execute(query, tuple(params)).fetchall()
     return [dict(x) for x in rows]
+
+
+def check_db_health(conn: sqlite3.Connection) -> dict:
+    required_tables = {"queue_items", "publish_items", "queue_sync_runs"}
+    required_indexes = {"idx_queue_status", "idx_queue_niche", "idx_publish_status", "idx_publish_niche"}
+
+    table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    index_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+    tables = {str(row["name"]) for row in table_rows}
+    indexes = {str(row["name"]) for row in index_rows}
+
+    missing_tables = sorted(required_tables - tables)
+    missing_indexes = sorted(required_indexes - indexes)
+
+    queue_total = int(conn.execute("SELECT COUNT(*) FROM queue_items").fetchone()[0])
+    publish_total = int(conn.execute("SELECT COUNT(*) FROM publish_items").fetchone()[0])
+
+    orphans = int(
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM publish_items p
+            LEFT JOIN queue_items q ON q.slug = p.slug
+            WHERE q.slug IS NULL
+            """
+        ).fetchone()[0]
+    )
+    empty_slug_queue = int(conn.execute("SELECT COUNT(*) FROM queue_items WHERE TRIM(slug) = ''").fetchone()[0])
+    empty_slug_publish = int(conn.execute("SELECT COUNT(*) FROM publish_items WHERE TRIM(slug) = ''").fetchone()[0])
+
+    issues: list[str] = []
+    if missing_tables:
+        issues.append(f"missing_tables={','.join(missing_tables)}")
+    if missing_indexes:
+        issues.append(f"missing_indexes={','.join(missing_indexes)}")
+    if orphans:
+        issues.append(f"publish_orphans={orphans}")
+    if empty_slug_queue:
+        issues.append(f"empty_slug_queue={empty_slug_queue}")
+    if empty_slug_publish:
+        issues.append(f"empty_slug_publish={empty_slug_publish}")
+
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "stats": {
+            "queue_items_total": queue_total,
+            "publish_items_total": publish_total,
+            "publish_orphans": orphans,
+            "missing_tables": missing_tables,
+            "missing_indexes": missing_indexes,
+        },
+    }

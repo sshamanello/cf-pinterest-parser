@@ -7,6 +7,7 @@ from pathlib import Path
 from cf_pinterest.queue_service import (
     export_n8n_ready_csv,
     export_n8n_ready_json,
+    get_db_health,
     get_export_profiles,
     import_sheet_file_to_queue_db,
     sync_report_to_queue_db,
@@ -129,6 +130,46 @@ class QueueDbTestCase(unittest.TestCase):
             self.assertEqual(len(payload), 1)
             self.assertEqual(payload[0]["title"], "Beta Font")
             self.assertEqual(payload[0]["status"], "generated")
+
+    def test_db_health_pass_and_orphan_detection(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="cf_queue_health_") as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "queue.db"
+            csv_path = tmp_path / "queue.csv"
+            csv_path.write_text(
+                "slug,title,status,pin_jpg,affiliate_url\n"
+                "theta,Theta Font,generated,/tmp/theta.jpg,https://example.com/theta\n",
+                encoding="utf-8",
+            )
+            import_sheet_file_to_queue_db(file_path=csv_path, db_path=db_path, niche="fonts")
+
+            health_ok = get_db_health(db_path)
+            self.assertTrue(health_ok["ok"])
+            self.assertEqual(health_ok["stats"]["publish_orphans"], 0)
+
+            conn = sqlite3.connect(db_path)
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO publish_items (
+                    slug, niche, title, description, image_url, target_url, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "orphan-slug",
+                    "fonts",
+                    "Orphan",
+                    "orphan",
+                    "x",
+                    "y",
+                    "generated",
+                ),
+            )
+            conn.commit()
+            conn.close()
+
+            health_bad = get_db_health(db_path)
+            self.assertFalse(health_bad["ok"])
+            self.assertGreater(health_bad["stats"]["publish_orphans"], 0)
 
 
 if __name__ == "__main__":

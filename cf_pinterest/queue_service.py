@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 from cf_pinterest.db import (
+    check_db_health,
     connect_db,
     insert_sync_run,
     list_publish_items_for_n8n,
@@ -164,6 +165,11 @@ def import_sheet_file_to_queue_db(file_path: str | Path, db_path: str | Path, ni
 def get_queue_summary(db_path: str | Path, niche: str) -> dict:
     with connect_db(db_path) as conn:
         return load_queue_summary(conn, niche)
+
+
+def get_db_health(db_path: str | Path) -> dict:
+    with connect_db(db_path) as conn:
+        return check_db_health(conn)
 
 
 def export_n8n_ready_csv(

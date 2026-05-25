@@ -23,6 +23,7 @@ from pathlib import Path
 from cf_pinterest.queue_service import (
     export_n8n_ready_json,
     export_n8n_ready_csv,
+    get_db_health,
     get_export_profiles,
     get_queue_summary,
     import_sheet_file_to_queue_db,
@@ -337,6 +338,24 @@ def cmd_export_n8n_queue(
         logger.info("[OK] n8n CSV export complete | rows=%d", exported)
 
 
+def cmd_db_health(db_path: str):
+    """Validate SQLite schema, indexes, and key data invariants."""
+    logger.info("Mode: db health")
+    logger.info("DB path: %s", db_path)
+    health = get_db_health(db_path=db_path)
+    if health["ok"]:
+        stats = health["stats"]
+        logger.info(
+            "[OK] DB health passed | queue_items=%d | publish_items=%d | publish_orphans=%d",
+            stats["queue_items_total"],
+            stats["publish_items_total"],
+            stats["publish_orphans"],
+        )
+        return
+    logger.error("[FAIL] DB health failed | issues=%s", "; ".join(health["issues"]))
+    raise SystemExit(2)
+
+
 def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync_sheet: bool, upload_vds: bool):
     """Production flow: parse products, download previews, generate pins, optionally sync sheet."""
     logger.info("Mode: prod auto-pin")
@@ -418,6 +437,7 @@ Commands:
   sync-queue-db  Upsert auto-pin report into local SQLite queue
   import-queue-file  Import CSV/XLSX file into local SQLite queue
   export-n8n-queue  Export final publish queue CSV for n8n
+  db-health  Validate SQLite schema and data invariants
   prod-auto-pin  Parse first products, generate prod pins, optionally sync Sheet
   upload-vds  Upload generated pin jpg files from report to VDS
 
@@ -433,6 +453,7 @@ Examples:
   python run.py sync-queue-db --report ./test/extractor/output/_reports/auto_pin_batch_report.json --tab fonts
   python run.py import-queue-file --file ./queue_export.xlsx --tab fonts
   python run.py export-n8n-queue --tab fonts --output ./output/n8n/fonts_publish.csv
+  python run.py db-health --db-path ./output/_state/queue.db
   python run.py prod-auto-pin --niche fonts --limit 20 --sync-sheet
   python run.py upload-vds --report ./output/prod/fonts/_reports/auto_pin_batch_report.json --sync-sheet
         """,
@@ -620,6 +641,12 @@ Examples:
         choices=["csv", "json"],
         help="Export format (default: csv)",
     )
+    p_db_health = subparsers.add_parser("db-health", help="Validate SQLite schema and key data invariants")
+    p_db_health.add_argument(
+        "--db-path",
+        default=str(QUEUE_DB_PATH),
+        help="SQLite queue file path (default: output/_state/queue.db)",
+    )
     p_prod = subparsers.add_parser("prod-auto-pin", help="Production auto-pin run from Creative Fabrica")
     p_prod.add_argument("--niche", "-n", default="fonts", choices=list(CATEGORIES.keys()), help="Category tab (default: fonts)")
     p_prod.add_argument("--limit", "-l", type=int, default=20, help="How many products to process (default: 20)")
@@ -688,6 +715,8 @@ Examples:
             statuses=args.statuses,
             export_format=args.format,
         )
+    elif args.command == "db-health":
+        cmd_db_health(db_path=args.db_path)
     elif args.command == "prod-auto-pin":
         cmd_prod_auto_pin(
             niche=args.niche,
