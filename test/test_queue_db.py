@@ -9,6 +9,7 @@ from cf_pinterest.queue_service import (
     export_n8n_ready_json,
     get_db_health,
     get_export_profiles,
+    get_queue_stats,
     import_sheet_file_to_queue_db,
     sync_report_to_queue_db,
 )
@@ -170,6 +171,40 @@ class QueueDbTestCase(unittest.TestCase):
             health_bad = get_db_health(db_path)
             self.assertFalse(health_bad["ok"])
             self.assertGreater(health_bad["stats"]["publish_orphans"], 0)
+
+    def test_queue_stats_scope_and_recent_runs(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="cf_queue_stats_") as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "queue.db"
+
+            csv_fonts = tmp_path / "fonts.csv"
+            csv_fonts.write_text(
+                "slug,title,status,pin_jpg,affiliate_url\n"
+                "f1,Font One,generated,/tmp/f1.jpg,https://example.com/f1\n"
+                "f2,Font Two,uploaded,/tmp/f2.jpg,https://example.com/f2\n",
+                encoding="utf-8",
+            )
+            import_sheet_file_to_queue_db(file_path=csv_fonts, db_path=db_path, niche="fonts")
+
+            csv_graphics = tmp_path / "graphics.csv"
+            csv_graphics.write_text(
+                "slug,title,status,pin_jpg,affiliate_url\n"
+                "g1,Graphic One,rejected,/tmp/g1.jpg,https://example.com/g1\n",
+                encoding="utf-8",
+            )
+            import_sheet_file_to_queue_db(file_path=csv_graphics, db_path=db_path, niche="graphics")
+
+            fonts_stats = get_queue_stats(db_path=db_path, niche="fonts", runs_limit=5)
+            self.assertEqual(fonts_stats["total_items"], 2)
+            self.assertEqual(fonts_stats["status_counts"].get("generated"), 1)
+            self.assertEqual(fonts_stats["status_counts"].get("uploaded"), 1)
+            self.assertGreaterEqual(len(fonts_stats["recent_runs"]), 1)
+
+            all_stats = get_queue_stats(db_path=db_path, niche=None, runs_limit=5)
+            self.assertEqual(all_stats["total_items"], 3)
+            self.assertEqual(all_stats["niche_counts"].get("fonts"), 2)
+            self.assertEqual(all_stats["niche_counts"].get("graphics"), 1)
+            self.assertGreaterEqual(len(all_stats["recent_runs"]), 2)
 
 
 if __name__ == "__main__":

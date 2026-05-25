@@ -7,6 +7,7 @@ from cf_pinterest.db import (
     check_db_health,
     connect_db,
     insert_sync_run,
+    load_queue_stats,
     list_publish_items_for_n8n,
     load_queue_summary,
     rebuild_publish_items,
@@ -170,6 +171,11 @@ def get_queue_summary(db_path: str | Path, niche: str) -> dict:
 def get_db_health(db_path: str | Path) -> dict:
     with connect_db(db_path) as conn:
         return check_db_health(conn)
+
+
+def get_queue_stats(db_path: str | Path, niche: str | None, runs_limit: int = 10) -> dict:
+    with connect_db(db_path) as conn:
+        return load_queue_stats(conn, niche=niche, runs_limit=runs_limit)
 
 
 def export_n8n_ready_csv(

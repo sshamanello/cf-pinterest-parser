@@ -25,6 +25,7 @@ from cf_pinterest.queue_service import (
     export_n8n_ready_csv,
     get_db_health,
     get_export_profiles,
+    get_queue_stats,
     get_queue_summary,
     import_sheet_file_to_queue_db,
     sync_report_to_queue_db,
@@ -356,6 +357,52 @@ def cmd_db_health(db_path: str):
     raise SystemExit(2)
 
 
+def cmd_queue_stats(db_path: str, tab: str, all_niches: bool, runs_limit: int):
+    """Show queue analytics summary by statuses, niches, and recent sync runs."""
+    logger.info("Mode: queue stats")
+    logger.info("DB path: %s", db_path)
+    niche = None if all_niches else tab
+    stats = get_queue_stats(db_path=db_path, niche=niche, runs_limit=runs_limit)
+
+    logger.info("[OK] Queue total items: %d | scope=%s", stats["total_items"], niche or "all niches")
+    status_counts = stats.get("status_counts", {})
+    if status_counts:
+        logger.info(
+            "Status counts: %s",
+            ", ".join(f"{k}={v}" for k, v in sorted(status_counts.items(), key=lambda x: (-x[1], x[0]))),
+        )
+    else:
+        logger.info("Status counts: no rows")
+
+    if all_niches:
+        niche_counts = stats.get("niche_counts", {})
+        logger.info(
+            "Niche counts: %s",
+            ", ".join(f"{k}={v}" for k, v in sorted(niche_counts.items(), key=lambda x: (-x[1], x[0])))
+            if niche_counts
+            else "no rows",
+        )
+
+    runs = stats.get("recent_runs", [])
+    if runs:
+        logger.info("Recent sync runs (latest %d):", len(runs))
+        for run in runs:
+            logger.info(
+                "  #%s niche=%s parsed=%s upserted=%s skipped=%s generated=%s uploaded=%s rejected=%s at=%s",
+                run.get("id"),
+                run.get("niche"),
+                run.get("parsed_items"),
+                run.get("upserted_items"),
+                run.get("skipped_items"),
+                run.get("generated_items"),
+                run.get("uploaded_items"),
+                run.get("rejected_items"),
+                run.get("created_at"),
+            )
+    else:
+        logger.info("Recent sync runs: no rows")
+
+
 def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync_sheet: bool, upload_vds: bool):
     """Production flow: parse products, download previews, generate pins, optionally sync sheet."""
     logger.info("Mode: prod auto-pin")
@@ -438,6 +485,7 @@ Commands:
   import-queue-file  Import CSV/XLSX file into local SQLite queue
   export-n8n-queue  Export final publish queue CSV for n8n
   db-health  Validate SQLite schema and data invariants
+  queue-stats  Show queue analytics summary
   prod-auto-pin  Parse first products, generate prod pins, optionally sync Sheet
   upload-vds  Upload generated pin jpg files from report to VDS
 
@@ -454,6 +502,7 @@ Examples:
   python run.py import-queue-file --file ./queue_export.xlsx --tab fonts
   python run.py export-n8n-queue --tab fonts --output ./output/n8n/fonts_publish.csv
   python run.py db-health --db-path ./output/_state/queue.db
+  python run.py queue-stats --db-path ./output/_state/queue.db --tab fonts --runs-limit 10
   python run.py prod-auto-pin --niche fonts --limit 20 --sync-sheet
   python run.py upload-vds --report ./output/prod/fonts/_reports/auto_pin_batch_report.json --sync-sheet
         """,
@@ -647,6 +696,30 @@ Examples:
         default=str(QUEUE_DB_PATH),
         help="SQLite queue file path (default: output/_state/queue.db)",
     )
+    p_queue_stats = subparsers.add_parser("queue-stats", help="Show queue analytics summary")
+    p_queue_stats.add_argument(
+        "--db-path",
+        default=str(QUEUE_DB_PATH),
+        help="SQLite queue file path (default: output/_state/queue.db)",
+    )
+    p_queue_stats.add_argument(
+        "--tab",
+        "-t",
+        default="fonts",
+        choices=list(CATEGORIES.keys()),
+        help="Niche/category scope when --all-niches is not set",
+    )
+    p_queue_stats.add_argument(
+        "--all-niches",
+        action="store_true",
+        help="Aggregate stats across all niches",
+    )
+    p_queue_stats.add_argument(
+        "--runs-limit",
+        type=int,
+        default=10,
+        help="How many recent sync runs to show (default: 10)",
+    )
     p_prod = subparsers.add_parser("prod-auto-pin", help="Production auto-pin run from Creative Fabrica")
     p_prod.add_argument("--niche", "-n", default="fonts", choices=list(CATEGORIES.keys()), help="Category tab (default: fonts)")
     p_prod.add_argument("--limit", "-l", type=int, default=20, help="How many products to process (default: 20)")
@@ -717,6 +790,8 @@ Examples:
         )
     elif args.command == "db-health":
         cmd_db_health(db_path=args.db_path)
+    elif args.command == "queue-stats":
+        cmd_queue_stats(db_path=args.db_path, tab=args.tab, all_niches=args.all_niches, runs_limit=args.runs_limit)
     elif args.command == "prod-auto-pin":
         cmd_prod_auto_pin(
             niche=args.niche,

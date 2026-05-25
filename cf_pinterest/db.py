@@ -295,3 +295,48 @@ def check_db_health(conn: sqlite3.Connection) -> dict:
             "missing_indexes": missing_indexes,
         },
     }
+
+
+def load_queue_stats(conn: sqlite3.Connection, niche: str | None = None, runs_limit: int = 10) -> dict:
+    status_query = """
+        SELECT status, COUNT(*) AS cnt
+        FROM queue_items
+        {where_clause}
+        GROUP BY status
+        ORDER BY cnt DESC, status ASC
+    """
+    niche_query = """
+        SELECT niche, COUNT(*) AS cnt
+        FROM queue_items
+        GROUP BY niche
+        ORDER BY cnt DESC, niche ASC
+    """
+    runs_query = """
+        SELECT id, niche, report_path, parsed_items, upserted_items, skipped_items, generated_items, uploaded_items, rejected_items, created_at
+        FROM queue_sync_runs
+        {where_clause}
+        ORDER BY id DESC
+        LIMIT ?
+    """
+
+    if niche:
+        where_clause = "WHERE niche = ?"
+        status_rows = conn.execute(status_query.format(where_clause=where_clause), (niche,)).fetchall()
+        runs_rows = conn.execute(runs_query.format(where_clause=where_clause), (niche, max(1, int(runs_limit)))).fetchall()
+    else:
+        where_clause = ""
+        status_rows = conn.execute(status_query.format(where_clause=where_clause)).fetchall()
+        runs_rows = conn.execute(runs_query.format(where_clause=where_clause), (max(1, int(runs_limit)),)).fetchall()
+
+    niche_rows = conn.execute(niche_query).fetchall()
+
+    total_query = "SELECT COUNT(*) FROM queue_items" + (" WHERE niche = ?" if niche else "")
+    total = int(conn.execute(total_query, (niche,) if niche else ()).fetchone()[0])
+
+    return {
+        "niche": niche,
+        "total_items": total,
+        "status_counts": {str(r["status"]): int(r["cnt"]) for r in status_rows},
+        "niche_counts": {str(r["niche"]): int(r["cnt"]) for r in niche_rows},
+        "recent_runs": [dict(r) for r in runs_rows],
+    }

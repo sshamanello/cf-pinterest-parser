@@ -44,6 +44,8 @@ Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.
   You can override profile config path with `CF_N8N_EXPORT_PROFILES_PATH=/path/to/profiles.json`.
 - `python run.py db-health --db-path output/_state/queue.db`
   Validates DB schema/indexes and key invariants (including orphan rows in `publish_items`).
+- `python run.py queue-stats --db-path output/_state/queue.db --tab fonts --runs-limit 10`
+  Shows queue analytics summary (status counts + recent sync runs). Use `--all-niches` for global view.
 
 ### Phone automation
 - `python run_phones.py devices`
