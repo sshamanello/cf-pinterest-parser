@@ -17,6 +17,8 @@ Examples:
 
 import argparse
 import logging
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -452,6 +454,32 @@ def cmd_queue_prune(
     )
 
 
+def cmd_ops_check(db_path: str, tab: str, strict_external: bool, runs_limit: int):
+    """Run an operational readiness check: smoke + db-health + queue-stats."""
+    logger.info("Mode: ops check")
+    logger.info("DB path: %s", db_path)
+    logger.info("Tab: %s", tab)
+    logger.info("Strict external smoke: %s", strict_external)
+
+    env = dict(os.environ)
+    env["CF_SMOKE_STRICT_EXTERNAL"] = "1" if strict_external else "0"
+    smoke = subprocess.run(
+        [sys.executable, "test_components.py"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    if smoke.returncode != 0:
+        logger.error("[FAIL] smoke check failed | exit=%d", smoke.returncode)
+        raise SystemExit(smoke.returncode)
+    logger.info("[OK] smoke check passed")
+
+    cmd_db_health(db_path=db_path)
+    cmd_queue_stats(db_path=db_path, tab=tab, all_niches=False, runs_limit=runs_limit)
+    logger.info("[OK] ops check completed")
+
+
 def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync_sheet: bool, upload_vds: bool):
     """Production flow: parse products, download previews, generate pins, optionally sync sheet."""
     logger.info("Mode: prod auto-pin")
@@ -537,6 +565,7 @@ Commands:
   queue-stats  Show queue analytics summary
   queue-rebuild-publish  Rebuild publish table from technical queue data
   queue-prune  Prune old queue data (dry-run by default)
+  ops-check  Run smoke + db-health + queue-stats preflight
   prod-auto-pin  Parse first products, generate prod pins, optionally sync Sheet
   upload-vds  Upload generated pin jpg files from report to VDS
 
@@ -557,6 +586,7 @@ Examples:
   python run.py queue-rebuild-publish --db-path ./output/_state/queue.db --all-niches
   python run.py queue-prune --db-path ./output/_state/queue.db --keep-sync-runs 200 --prune-rejected-older-than-days 30
   python run.py queue-prune --db-path ./output/_state/queue.db --keep-sync-runs 200 --apply
+  python run.py ops-check --db-path ./output/_state/queue.db --tab fonts --runs-limit 10
   python run.py prod-auto-pin --niche fonts --limit 20 --sync-sheet
   python run.py upload-vds --report ./output/prod/fonts/_reports/auto_pin_batch_report.json --sync-sheet
         """,
@@ -815,6 +845,30 @@ Examples:
         action="store_true",
         help="Apply deletion; without this flag command runs in dry-run mode",
     )
+    p_ops = subparsers.add_parser("ops-check", help="Run smoke + db-health + queue-stats preflight")
+    p_ops.add_argument(
+        "--db-path",
+        default=str(QUEUE_DB_PATH),
+        help="SQLite queue file path (default: output/_state/queue.db)",
+    )
+    p_ops.add_argument(
+        "--tab",
+        "-t",
+        default="fonts",
+        choices=list(CATEGORIES.keys()),
+        help="Niche/category for queue stats scope",
+    )
+    p_ops.add_argument(
+        "--runs-limit",
+        type=int,
+        default=10,
+        help="How many recent sync runs to show in queue stats (default: 10)",
+    )
+    p_ops.add_argument(
+        "--strict-external",
+        action="store_true",
+        help="Enable strict external smoke checks (network/Playwright/Sheets as required)",
+    )
     p_prod = subparsers.add_parser("prod-auto-pin", help="Production auto-pin run from Creative Fabrica")
     p_prod.add_argument("--niche", "-n", default="fonts", choices=list(CATEGORIES.keys()), help="Category tab (default: fonts)")
     p_prod.add_argument("--limit", "-l", type=int, default=20, help="How many products to process (default: 20)")
@@ -895,6 +949,13 @@ Examples:
             keep_sync_runs=args.keep_sync_runs,
             prune_rejected_older_than_days=args.prune_rejected_older_than_days,
             apply_changes=args.apply,
+        )
+    elif args.command == "ops-check":
+        cmd_ops_check(
+            db_path=args.db_path,
+            tab=args.tab,
+            strict_external=args.strict_external,
+            runs_limit=args.runs_limit,
         )
     elif args.command == "prod-auto-pin":
         cmd_prod_auto_pin(

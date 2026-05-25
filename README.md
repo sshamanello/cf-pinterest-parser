@@ -50,6 +50,8 @@ Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.
   Rebuilds `publish_items` from `queue_items` after manual fixes/migrations.
 - `python run.py queue-prune --db-path output/_state/queue.db --keep-sync-runs 200 --prune-rejected-older-than-days 30`
   Shows what would be deleted (dry-run). Add `--apply` to actually delete old data.
+- `python run.py ops-check --db-path output/_state/queue.db --tab fonts --runs-limit 10`
+  Runs preflight checks in one command: smoke checks, DB health, and queue stats.
 
 ### Phone automation
 - `python run_phones.py devices`
