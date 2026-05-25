@@ -88,6 +88,21 @@ class QueueDbTestCase(unittest.TestCase):
             self.assertIn("beta", raw)
             self.assertNotIn("gamma", raw)
 
+            export_path_min = tmp_path / "n8n_minimal.csv"
+            exported_min = export_n8n_ready_csv(
+                db_path=db_path,
+                niche="fonts",
+                output_path=export_path_min,
+                limit=100,
+                profile="n8n_minimal",
+                statuses=(),
+            )
+            self.assertEqual(exported_min, 2)
+            raw_min = export_path_min.read_text(encoding="utf-8")
+            self.assertIn("title,description,image_url,target_url", raw_min.splitlines()[0])
+            self.assertIn("Beta Font", raw_min)
+            self.assertIn("Gamma Font", raw_min)
+
 
 if __name__ == "__main__":
     unittest.main()

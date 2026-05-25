@@ -295,13 +295,23 @@ def cmd_import_queue_file(file_path: str, tab: str, db_path: str):
     )
 
 
-def cmd_export_n8n_queue(tab: str, db_path: str, output_path: str, limit: int):
+def cmd_export_n8n_queue(tab: str, db_path: str, output_path: str, limit: int, profile: str, statuses: str):
     """Export final publish table into CSV for n8n ingestion."""
     logger.info("Mode: export n8n queue")
     logger.info("Tab: %s", tab)
     logger.info("DB path: %s", db_path)
     logger.info("Output: %s", output_path)
-    exported = export_n8n_ready_csv(db_path=db_path, niche=tab, output_path=output_path, limit=limit)
+    logger.info("Profile: %s", profile)
+    status_values = tuple(x.strip() for x in statuses.split(",") if x.strip())
+    logger.info("Statuses: %s", ",".join(status_values) if status_values else "all")
+    exported = export_n8n_ready_csv(
+        db_path=db_path,
+        niche=tab,
+        output_path=output_path,
+        limit=limit,
+        profile=profile,
+        statuses=status_values,
+    )
     logger.info("[OK] n8n CSV export complete | rows=%d", exported)
 
 
@@ -571,6 +581,17 @@ Examples:
         default=500,
         help="Maximum exported rows (default: 500)",
     )
+    p_export.add_argument(
+        "--profile",
+        default="n8n_default",
+        choices=["n8n_default", "n8n_minimal"],
+        help="Export profile (default: n8n_default)",
+    )
+    p_export.add_argument(
+        "--statuses",
+        default="generated,uploaded",
+        help="Comma-separated statuses to export; empty means all",
+    )
     p_prod = subparsers.add_parser("prod-auto-pin", help="Production auto-pin run from Creative Fabrica")
     p_prod.add_argument("--niche", "-n", default="fonts", choices=list(CATEGORIES.keys()), help="Category tab (default: fonts)")
     p_prod.add_argument("--limit", "-l", type=int, default=20, help="How many products to process (default: 20)")
@@ -630,7 +651,14 @@ Examples:
     elif args.command == "import-queue-file":
         cmd_import_queue_file(file_path=args.file, tab=args.tab, db_path=args.db_path)
     elif args.command == "export-n8n-queue":
-        cmd_export_n8n_queue(tab=args.tab, db_path=args.db_path, output_path=args.output, limit=args.limit)
+        cmd_export_n8n_queue(
+            tab=args.tab,
+            db_path=args.db_path,
+            output_path=args.output,
+            limit=args.limit,
+            profile=args.profile,
+            statuses=args.statuses,
+        )
     elif args.command == "prod-auto-pin":
         cmd_prod_auto_pin(
             niche=args.niche,

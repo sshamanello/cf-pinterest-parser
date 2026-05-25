@@ -12,6 +12,11 @@ from cf_pinterest.db import (
 )
 from cf_pinterest.models import QueueItem, QueueSyncResult
 
+N8N_EXPORT_PROFILES: dict[str, list[str]] = {
+    "n8n_default": ["slug", "title", "description", "image_url", "target_url", "status", "updated_at"],
+    "n8n_minimal": ["title", "description", "image_url", "target_url"],
+}
+
 
 def _row_to_queue_item(row: dict, niche: str) -> QueueItem | None:
     slug = str(row.get("slug") or "").strip()
@@ -130,16 +135,26 @@ def get_queue_summary(db_path: str | Path, niche: str) -> dict:
         return load_queue_summary(conn, niche)
 
 
-def export_n8n_ready_csv(db_path: str | Path, niche: str, output_path: str | Path, limit: int = 500) -> int:
+def export_n8n_ready_csv(
+    db_path: str | Path,
+    niche: str,
+    output_path: str | Path,
+    limit: int = 500,
+    profile: str = "n8n_default",
+    statuses: tuple[str, ...] = ("generated", "uploaded"),
+) -> int:
+    if profile not in N8N_EXPORT_PROFILES:
+        supported = ", ".join(sorted(N8N_EXPORT_PROFILES.keys()))
+        raise ValueError(f"Unknown export profile '{profile}'. Supported: {supported}")
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     with connect_db(db_path) as conn:
-        rows = list_publish_items_for_n8n(conn, niche=niche, limit=limit)
+        rows = list_publish_items_for_n8n(conn, niche=niche, limit=limit, statuses=statuses)
 
-    fieldnames = ["slug", "title", "description", "image_url", "target_url", "status", "updated_at"]
+    fieldnames = N8N_EXPORT_PROFILES[profile]
     with out.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for row in rows:
-            writer.writerow(row)
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
     return len(rows)

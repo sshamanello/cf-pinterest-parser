@@ -222,16 +222,23 @@ def rebuild_publish_items(conn: sqlite3.Connection, niche: str) -> int:
     return len(payload)
 
 
-def list_publish_items_for_n8n(conn: sqlite3.Connection, niche: str, limit: int = 500) -> list[dict]:
-    rows = conn.execute(
-        """
+def list_publish_items_for_n8n(
+    conn: sqlite3.Connection,
+    niche: str,
+    limit: int = 500,
+    statuses: tuple[str, ...] = ("generated", "uploaded"),
+) -> list[dict]:
+    query = """
         SELECT slug, title, description, image_url, target_url, status, updated_at
         FROM publish_items
         WHERE niche = ?
-          AND status IN ('generated', 'uploaded')
-        ORDER BY updated_at DESC
-        LIMIT ?
-        """,
-        (niche, max(1, int(limit))),
-    ).fetchall()
+    """
+    params: list[object] = [niche]
+    if statuses:
+        placeholders = ", ".join("?" for _ in statuses)
+        query += f" AND status IN ({placeholders})"
+        params.extend(statuses)
+    query += " ORDER BY updated_at DESC LIMIT ?"
+    params.append(max(1, int(limit)))
+    rows = conn.execute(query, tuple(params)).fetchall()
     return [dict(x) for x in rows]
