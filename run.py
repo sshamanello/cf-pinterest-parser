@@ -20,6 +20,12 @@ import logging
 import sys
 from pathlib import Path
 
+from cf_pinterest.queue_service import (
+    export_n8n_ready_csv,
+    get_queue_summary,
+    import_sheet_file_to_queue_db,
+    sync_report_to_queue_db,
+)
 from config import CATEGORIES
 from auto_pin_pipeline import run_auto_pin_batch
 from comfy_processor import process_products, create_pin
@@ -32,6 +38,7 @@ from sheets import append_products, ensure_tabs, get_sheet_client, test_connecti
 from logging_utils import configure_logging
 
 logger = configure_logging("run", default_log_name="run.log")
+QUEUE_DB_PATH = Path("output/_state/queue.db")
 
 
 def cmd_parse(niche: str = None, pages: int = None):
@@ -243,6 +250,61 @@ def cmd_sync_auto_pin(report_path: str, tab: str):
     logger.info("[OK] Sheet sync complete | inserted: %d | updated: %d", inserted, updated)
 
 
+def cmd_sync_queue_db(report_path: str, tab: str, db_path: str):
+    """Sync auto-pin batch report into local SQLite queue."""
+    logger.info("Mode: sync queue db")
+    logger.info("Report: %s", report_path)
+    logger.info("Tab: %s", tab)
+    logger.info("DB path: %s", db_path)
+    result = sync_report_to_queue_db(report_path=report_path, db_path=db_path, niche=tab)
+    logger.info(
+        "[OK] Queue DB sync complete | parsed=%d | upserted=%d | skipped=%d | generated=%d | uploaded=%d | rejected=%d",
+        result.parsed_items,
+        result.upserted_items,
+        result.skipped_items,
+        result.generated_items,
+        result.uploaded_items,
+        result.rejected_items,
+    )
+
+
+def cmd_import_queue_file(file_path: str, tab: str, db_path: str):
+    """Import CSV/XLSX file into local SQLite queue."""
+    logger.info("Mode: import queue file")
+    logger.info("File: %s", file_path)
+    logger.info("Tab: %s", tab)
+    logger.info("DB path: %s", db_path)
+    result = import_sheet_file_to_queue_db(file_path=file_path, db_path=db_path, niche=tab)
+    logger.info(
+        "[OK] Queue file import complete | parsed=%d | upserted=%d | skipped=%d | generated=%d | uploaded=%d | rejected=%d",
+        result.parsed_items,
+        result.upserted_items,
+        result.skipped_items,
+        result.generated_items,
+        result.uploaded_items,
+        result.rejected_items,
+    )
+    summary = get_queue_summary(db_path=db_path, niche=tab)
+    logger.info(
+        "[OK] Queue summary | niche=%s | total=%d | generated=%d | uploaded=%d | rejected=%d",
+        summary["niche"],
+        summary["total_items"],
+        summary["generated_items"],
+        summary["uploaded_items"],
+        summary["rejected_items"],
+    )
+
+
+def cmd_export_n8n_queue(tab: str, db_path: str, output_path: str, limit: int):
+    """Export final publish table into CSV for n8n ingestion."""
+    logger.info("Mode: export n8n queue")
+    logger.info("Tab: %s", tab)
+    logger.info("DB path: %s", db_path)
+    logger.info("Output: %s", output_path)
+    exported = export_n8n_ready_csv(db_path=db_path, niche=tab, output_path=output_path, limit=limit)
+    logger.info("[OK] n8n CSV export complete | rows=%d", exported)
+
+
 def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync_sheet: bool, upload_vds: bool):
     """Production flow: parse products, download previews, generate pins, optionally sync sheet."""
     logger.info("Mode: prod auto-pin")
@@ -269,6 +331,14 @@ def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync
         result.uploaded_count,
     )
     logger.info("Report: %s", result.report_path)
+    sync_result = sync_report_to_queue_db(report_path=result.report_path, db_path=QUEUE_DB_PATH, niche=niche)
+    logger.info(
+        "[OK] Queue DB sync complete | parsed=%d | upserted=%d | skipped=%d | db=%s",
+        sync_result.parsed_items,
+        sync_result.upserted_items,
+        sync_result.skipped_items,
+        QUEUE_DB_PATH,
+    )
 
     if sync_sheet:
         spreadsheet = get_sheet_client()
@@ -313,6 +383,9 @@ Commands:
   publish-fonts  Build publish-ready images (overlay + unique background)
   auto-pin  Full automatic pin pipeline (bbox/mode/layout + pin/meta)
   sync-auto-pin  Upsert auto-pin report to Google Sheet by slug
+  sync-queue-db  Upsert auto-pin report into local SQLite queue
+  import-queue-file  Import CSV/XLSX file into local SQLite queue
+  export-n8n-queue  Export final publish queue CSV for n8n
   prod-auto-pin  Parse first products, generate prod pins, optionally sync Sheet
   upload-vds  Upload generated pin jpg files from report to VDS
 
@@ -325,6 +398,9 @@ Examples:
   python run.py publish-fonts --input ./test/extractor/input --output ./output --category fonts
   python run.py auto-pin --input ./test/extractor/input --output ./output
   python run.py sync-auto-pin --report ./test/extractor/output/_reports/auto_pin_batch_report.json --tab fonts
+  python run.py sync-queue-db --report ./test/extractor/output/_reports/auto_pin_batch_report.json --tab fonts
+  python run.py import-queue-file --file ./queue_export.xlsx --tab fonts
+  python run.py export-n8n-queue --tab fonts --output ./output/n8n/fonts_publish.csv
   python run.py prod-auto-pin --niche fonts --limit 20 --sync-sheet
   python run.py upload-vds --report ./output/prod/fonts/_reports/auto_pin_batch_report.json --sync-sheet
         """,
@@ -432,6 +508,69 @@ Examples:
         choices=list(CATEGORIES.keys()),
         help="Sheet tab/category (default: fonts)",
     )
+    p_sync_db = subparsers.add_parser("sync-queue-db", help="Sync auto-pin batch report to local SQLite queue")
+    p_sync_db.add_argument(
+        "--report",
+        "-r",
+        required=True,
+        help="Path to auto_pin_batch_report.json",
+    )
+    p_sync_db.add_argument(
+        "--tab",
+        "-t",
+        default="fonts",
+        choices=list(CATEGORIES.keys()),
+        help="Niche/category (default: fonts)",
+    )
+    p_sync_db.add_argument(
+        "--db-path",
+        default=str(QUEUE_DB_PATH),
+        help="SQLite queue file path (default: output/_state/queue.db)",
+    )
+    p_import = subparsers.add_parser("import-queue-file", help="Import CSV/XLSX into local SQLite queue")
+    p_import.add_argument(
+        "--file",
+        "-f",
+        required=True,
+        help="Input file (.csv or .xlsx)",
+    )
+    p_import.add_argument(
+        "--tab",
+        "-t",
+        default="fonts",
+        choices=list(CATEGORIES.keys()),
+        help="Niche/category (default: fonts)",
+    )
+    p_import.add_argument(
+        "--db-path",
+        default=str(QUEUE_DB_PATH),
+        help="SQLite queue file path (default: output/_state/queue.db)",
+    )
+    p_export = subparsers.add_parser("export-n8n-queue", help="Export final publish queue CSV for n8n")
+    p_export.add_argument(
+        "--tab",
+        "-t",
+        default="fonts",
+        choices=list(CATEGORIES.keys()),
+        help="Niche/category (default: fonts)",
+    )
+    p_export.add_argument(
+        "--db-path",
+        default=str(QUEUE_DB_PATH),
+        help="SQLite queue file path (default: output/_state/queue.db)",
+    )
+    p_export.add_argument(
+        "--output",
+        "-o",
+        default="output/n8n/fonts_publish.csv",
+        help="Output CSV path for n8n",
+    )
+    p_export.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Maximum exported rows (default: 500)",
+    )
     p_prod = subparsers.add_parser("prod-auto-pin", help="Production auto-pin run from Creative Fabrica")
     p_prod.add_argument("--niche", "-n", default="fonts", choices=list(CATEGORIES.keys()), help="Category tab (default: fonts)")
     p_prod.add_argument("--limit", "-l", type=int, default=20, help="How many products to process (default: 20)")
@@ -486,6 +625,12 @@ Examples:
         cmd_auto_pin(input_path=args.input, output_root=args.output)
     elif args.command == "sync-auto-pin":
         cmd_sync_auto_pin(report_path=args.report, tab=args.tab)
+    elif args.command == "sync-queue-db":
+        cmd_sync_queue_db(report_path=args.report, tab=args.tab, db_path=args.db_path)
+    elif args.command == "import-queue-file":
+        cmd_import_queue_file(file_path=args.file, tab=args.tab, db_path=args.db_path)
+    elif args.command == "export-n8n-queue":
+        cmd_export_n8n_queue(tab=args.tab, db_path=args.db_path, output_path=args.output, limit=args.limit)
     elif args.command == "prod-auto-pin":
         cmd_prod_auto_pin(
             niche=args.niche,

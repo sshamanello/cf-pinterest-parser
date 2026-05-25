@@ -9,6 +9,7 @@ The repository now covers the full workflow for the `fonts` MVP:
 - sync metadata into Google Sheets;
 - publish through either `n8n` or Android phone automation;
 - keep daily posting warm and human-looking through a jittered scheduler.
+- store a local SQLite queue for stable retries and analytics experiments.
 
 ## Current architecture
 
@@ -29,6 +30,12 @@ Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.
   Main production batch: parse -> download previews -> generate pins -> upload JPG to VDS -> sync Google Sheet.
 - `python run.py upload-vds --report <report.json> --sync-sheet --tab fonts`
   Uploads already-generated JPG assets from an existing report.
+- `python run.py sync-queue-db --report <report.json> --tab fonts --db-path output/_state/queue.db`
+  Upserts report data into local SQLite queue storage.
+- `python run.py import-queue-file --file <queue.csv|queue.xlsx> --tab fonts --db-path output/_state/queue.db`
+  Imports historical/exported spreadsheet data into local queue DB.
+- `python run.py export-n8n-queue --tab fonts --output output/n8n/fonts_publish.csv`
+  Exports final publish dataset for n8n ingestion.
 
 ### Phone automation
 - `python run_phones.py devices`
@@ -43,6 +50,7 @@ Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.
 
 ```text
 run.py                     Main CLI for scraping, pin generation, VDS upload, and sheet sync
+cf_pinterest/              Modular core (queue models, DB schema, sync service)
 prod_auto_pin_pipeline.py  Production batch orchestrator
 auto_pin_pipeline.py       Automatic pin builder and reporting
 parser.py                  Playwright scraper for Creative Fabrica category pages
@@ -160,6 +168,20 @@ CF_LOG_DIR=logs
 CF_LOG_MAX_BYTES=5242880
 CF_LOG_BACKUP_COUNT=5
 ```
+
+## Local queue database
+
+Default path: `output/_state/queue.db`
+
+Use cases:
+- reliable local queue state between runs;
+- analytics and experiments without Google Sheets dependency;
+- foundation for modular architecture evolution.
+
+Data model:
+- `queue_items` (technical): full operational fields (`slug/status/pin_jpg/source_file/...`) for retries and debugging.
+- `publish_items` (final): cleaned publish payload (`title/description/image_url/target_url/status`) for integrations like n8n.
+- `queue_sync_runs`: history of each sync/import for auditability and run analytics.
 
 ## Docker
 
