@@ -48,6 +48,8 @@ Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.
   Shows queue analytics summary (status counts + recent sync runs). Use `--all-niches` for global view.
 - `python run.py queue-rebuild-publish --db-path output/_state/queue.db --all-niches`
   Rebuilds `publish_items` from `queue_items` after manual fixes/migrations.
+- `python run.py queue-prune --db-path output/_state/queue.db --keep-sync-runs 200 --prune-rejected-older-than-days 30`
+  Shows what would be deleted (dry-run). Add `--apply` to actually delete old data.
 
 ### Phone automation
 - `python run_phones.py devices`

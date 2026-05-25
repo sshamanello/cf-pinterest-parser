@@ -10,6 +10,7 @@ from cf_pinterest.db import (
     load_queue_stats,
     list_publish_items_for_n8n,
     load_queue_summary,
+    prune_queue_data,
     rebuild_publish_items,
     rebuild_publish_items_all,
     upsert_queue_items,
@@ -190,6 +191,21 @@ def rebuild_publish_queue(db_path: str | Path, niche: str | None = None) -> dict
             "niches": rebuilt_by_niche,
             "rebuilt_rows": sum(rebuilt_by_niche.values()),
         }
+
+
+def prune_queue(
+    db_path: str | Path,
+    keep_sync_runs: int = 200,
+    prune_rejected_older_than_days: int | None = None,
+    apply_changes: bool = False,
+) -> dict:
+    with connect_db(db_path) as conn:
+        return prune_queue_data(
+            conn,
+            keep_sync_runs=keep_sync_runs,
+            prune_rejected_older_than_days=prune_rejected_older_than_days,
+            apply_changes=apply_changes,
+        )
 
 
 def export_n8n_ready_csv(

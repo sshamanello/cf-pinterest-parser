@@ -28,6 +28,7 @@ from cf_pinterest.queue_service import (
     get_queue_stats,
     get_queue_summary,
     import_sheet_file_to_queue_db,
+    prune_queue,
     rebuild_publish_queue,
     sync_report_to_queue_db,
 )
@@ -421,6 +422,36 @@ def cmd_queue_rebuild_publish(db_path: str, tab: str, all_niches: bool):
         logger.info("  niche=%s rows=%d", niche, count)
 
 
+def cmd_queue_prune(
+    db_path: str,
+    keep_sync_runs: int,
+    prune_rejected_older_than_days: int | None,
+    apply_changes: bool,
+):
+    """Prune old queue data with a safe dry-run by default."""
+    logger.info("Mode: queue prune")
+    logger.info("DB path: %s", db_path)
+    logger.info("keep_sync_runs: %d", keep_sync_runs)
+    logger.info(
+        "prune_rejected_older_than_days: %s",
+        str(prune_rejected_older_than_days) if prune_rejected_older_than_days is not None else "disabled",
+    )
+    logger.info("Apply mode: %s", "apply" if apply_changes else "dry-run")
+
+    result = prune_queue(
+        db_path=db_path,
+        keep_sync_runs=keep_sync_runs,
+        prune_rejected_older_than_days=prune_rejected_older_than_days,
+        apply_changes=apply_changes,
+    )
+    logger.info(
+        "[OK] Queue prune %s | sync_runs_to_delete=%d | rejected_to_delete=%d",
+        "applied" if apply_changes else "dry-run result",
+        result["sync_runs_to_delete"],
+        result["rejected_to_delete"],
+    )
+
+
 def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync_sheet: bool, upload_vds: bool):
     """Production flow: parse products, download previews, generate pins, optionally sync sheet."""
     logger.info("Mode: prod auto-pin")
@@ -505,6 +536,7 @@ Commands:
   db-health  Validate SQLite schema and data invariants
   queue-stats  Show queue analytics summary
   queue-rebuild-publish  Rebuild publish table from technical queue data
+  queue-prune  Prune old queue data (dry-run by default)
   prod-auto-pin  Parse first products, generate prod pins, optionally sync Sheet
   upload-vds  Upload generated pin jpg files from report to VDS
 
@@ -523,6 +555,8 @@ Examples:
   python run.py db-health --db-path ./output/_state/queue.db
   python run.py queue-stats --db-path ./output/_state/queue.db --tab fonts --runs-limit 10
   python run.py queue-rebuild-publish --db-path ./output/_state/queue.db --all-niches
+  python run.py queue-prune --db-path ./output/_state/queue.db --keep-sync-runs 200 --prune-rejected-older-than-days 30
+  python run.py queue-prune --db-path ./output/_state/queue.db --keep-sync-runs 200 --apply
   python run.py prod-auto-pin --niche fonts --limit 20 --sync-sheet
   python run.py upload-vds --report ./output/prod/fonts/_reports/auto_pin_batch_report.json --sync-sheet
         """,
@@ -758,6 +792,29 @@ Examples:
         action="store_true",
         help="Rebuild publish rows for all niches",
     )
+    p_prune = subparsers.add_parser("queue-prune", help="Prune old queue data (dry-run by default)")
+    p_prune.add_argument(
+        "--db-path",
+        default=str(QUEUE_DB_PATH),
+        help="SQLite queue file path (default: output/_state/queue.db)",
+    )
+    p_prune.add_argument(
+        "--keep-sync-runs",
+        type=int,
+        default=200,
+        help="How many latest sync runs to keep (default: 200)",
+    )
+    p_prune.add_argument(
+        "--prune-rejected-older-than-days",
+        type=int,
+        default=None,
+        help="Delete rejected rows older than this number of days (optional)",
+    )
+    p_prune.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply deletion; without this flag command runs in dry-run mode",
+    )
     p_prod = subparsers.add_parser("prod-auto-pin", help="Production auto-pin run from Creative Fabrica")
     p_prod.add_argument("--niche", "-n", default="fonts", choices=list(CATEGORIES.keys()), help="Category tab (default: fonts)")
     p_prod.add_argument("--limit", "-l", type=int, default=20, help="How many products to process (default: 20)")
@@ -832,6 +889,13 @@ Examples:
         cmd_queue_stats(db_path=args.db_path, tab=args.tab, all_niches=args.all_niches, runs_limit=args.runs_limit)
     elif args.command == "queue-rebuild-publish":
         cmd_queue_rebuild_publish(db_path=args.db_path, tab=args.tab, all_niches=args.all_niches)
+    elif args.command == "queue-prune":
+        cmd_queue_prune(
+            db_path=args.db_path,
+            keep_sync_runs=args.keep_sync_runs,
+            prune_rejected_older_than_days=args.prune_rejected_older_than_days,
+            apply_changes=args.apply,
+        )
     elif args.command == "prod-auto-pin":
         cmd_prod_auto_pin(
             niche=args.niche,

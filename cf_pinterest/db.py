@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from cf_pinterest.models import QueueItem, QueueSyncResult
@@ -355,4 +356,71 @@ def load_queue_stats(conn: sqlite3.Connection, niche: str | None = None, runs_li
         "status_counts": {str(r["status"]): int(r["cnt"]) for r in status_rows},
         "niche_counts": {str(r["niche"]): int(r["cnt"]) for r in niche_rows},
         "recent_runs": [dict(r) for r in runs_rows],
+    }
+
+
+def prune_queue_data(
+    conn: sqlite3.Connection,
+    keep_sync_runs: int = 200,
+    prune_rejected_older_than_days: int | None = None,
+    apply_changes: bool = False,
+) -> dict:
+    keep_sync_runs = max(1, int(keep_sync_runs))
+    max_sync_id_row = conn.execute("SELECT MAX(id) FROM queue_sync_runs").fetchone()
+    max_sync_id = int(max_sync_id_row[0] or 0)
+    cutoff_sync_id = max(0, max_sync_id - keep_sync_runs)
+
+    sync_runs_to_delete = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM queue_sync_runs WHERE id <= ?",
+            (cutoff_sync_id,),
+        ).fetchone()[0]
+    )
+
+    rejected_to_delete = 0
+    rejected_before_ts = None
+    if prune_rejected_older_than_days is not None:
+        days = max(1, int(prune_rejected_older_than_days))
+        rejected_before_ts = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        rejected_to_delete = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM queue_items
+                WHERE status = 'rejected' AND updated_at < ?
+                """,
+                (rejected_before_ts,),
+            ).fetchone()[0]
+        )
+
+    if apply_changes:
+        if sync_runs_to_delete > 0:
+            conn.execute("DELETE FROM queue_sync_runs WHERE id <= ?", (cutoff_sync_id,))
+        if rejected_before_ts and rejected_to_delete > 0:
+            conn.execute(
+                """
+                DELETE FROM publish_items
+                WHERE slug IN (
+                    SELECT slug
+                    FROM queue_items
+                    WHERE status = 'rejected' AND updated_at < ?
+                )
+                """,
+                (rejected_before_ts,),
+            )
+            conn.execute(
+                """
+                DELETE FROM queue_items
+                WHERE status = 'rejected' AND updated_at < ?
+                """,
+                (rejected_before_ts,),
+            )
+        conn.commit()
+
+    return {
+        "apply_changes": apply_changes,
+        "keep_sync_runs": keep_sync_runs,
+        "sync_runs_to_delete": sync_runs_to_delete,
+        "prune_rejected_older_than_days": prune_rejected_older_than_days,
+        "rejected_to_delete": rejected_to_delete,
     }

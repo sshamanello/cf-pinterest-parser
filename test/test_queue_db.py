@@ -11,6 +11,7 @@ from cf_pinterest.queue_service import (
     get_export_profiles,
     get_queue_stats,
     import_sheet_file_to_queue_db,
+    prune_queue,
     rebuild_publish_queue,
     sync_report_to_queue_db,
 )
@@ -237,6 +238,44 @@ class QueueDbTestCase(unittest.TestCase):
             result_all = rebuild_publish_queue(db_path=db_path, niche=None)
             self.assertEqual(result_all["mode"], "all")
             self.assertGreaterEqual(result_all["rebuilt_rows"], 2)
+
+    def test_prune_queue_dry_run_and_apply(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="cf_queue_prune_") as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "queue.db"
+            csv_path = tmp_path / "queue.csv"
+            csv_path.write_text(
+                "slug,title,status,pin_jpg,affiliate_url\n"
+                "p1,Item P1,generated,/tmp/p1.jpg,https://example.com/p1\n",
+                encoding="utf-8",
+            )
+
+            import_sheet_file_to_queue_db(file_path=csv_path, db_path=db_path, niche="fonts")
+            import_sheet_file_to_queue_db(file_path=csv_path, db_path=db_path, niche="fonts")
+            import_sheet_file_to_queue_db(file_path=csv_path, db_path=db_path, niche="fonts")
+
+            conn = sqlite3.connect(db_path)
+            before_runs = conn.execute("SELECT COUNT(*) FROM queue_sync_runs").fetchone()[0]
+            conn.close()
+            self.assertGreaterEqual(before_runs, 3)
+
+            dry = prune_queue(db_path=db_path, keep_sync_runs=1, apply_changes=False)
+            self.assertFalse(dry["apply_changes"])
+            self.assertGreaterEqual(dry["sync_runs_to_delete"], 2)
+
+            conn = sqlite3.connect(db_path)
+            still_runs = conn.execute("SELECT COUNT(*) FROM queue_sync_runs").fetchone()[0]
+            conn.close()
+            self.assertEqual(still_runs, before_runs)
+
+            applied = prune_queue(db_path=db_path, keep_sync_runs=1, apply_changes=True)
+            self.assertTrue(applied["apply_changes"])
+            self.assertGreaterEqual(applied["sync_runs_to_delete"], 2)
+
+            conn = sqlite3.connect(db_path)
+            after_runs = conn.execute("SELECT COUNT(*) FROM queue_sync_runs").fetchone()[0]
+            conn.close()
+            self.assertLessEqual(after_runs, 1)
 
 
 if __name__ == "__main__":
