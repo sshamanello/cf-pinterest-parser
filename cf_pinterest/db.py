@@ -222,6 +222,22 @@ def rebuild_publish_items(conn: sqlite3.Connection, niche: str) -> int:
     return len(payload)
 
 
+def rebuild_publish_items_all(conn: sqlite3.Connection) -> dict[str, int]:
+    niche_rows = conn.execute(
+        """
+        SELECT DISTINCT niche
+        FROM queue_items
+        WHERE TRIM(niche) != ''
+        ORDER BY niche ASC
+        """
+    ).fetchall()
+    result: dict[str, int] = {}
+    for row in niche_rows:
+        niche = str(row["niche"])
+        result[niche] = rebuild_publish_items(conn, niche)
+    return result
+
+
 def list_publish_items_for_n8n(
     conn: sqlite3.Connection,
     niche: str,

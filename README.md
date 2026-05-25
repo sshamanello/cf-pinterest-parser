@@ -46,6 +46,8 @@ Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.
   Validates DB schema/indexes and key invariants (including orphan rows in `publish_items`).
 - `python run.py queue-stats --db-path output/_state/queue.db --tab fonts --runs-limit 10`
   Shows queue analytics summary (status counts + recent sync runs). Use `--all-niches` for global view.
+- `python run.py queue-rebuild-publish --db-path output/_state/queue.db --all-niches`
+  Rebuilds `publish_items` from `queue_items` after manual fixes/migrations.
 
 ### Phone automation
 - `python run_phones.py devices`

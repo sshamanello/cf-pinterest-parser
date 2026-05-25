@@ -11,6 +11,7 @@ from cf_pinterest.db import (
     list_publish_items_for_n8n,
     load_queue_summary,
     rebuild_publish_items,
+    rebuild_publish_items_all,
     upsert_queue_items,
 )
 from cf_pinterest.models import QueueItem, QueueSyncResult
@@ -176,6 +177,19 @@ def get_db_health(db_path: str | Path) -> dict:
 def get_queue_stats(db_path: str | Path, niche: str | None, runs_limit: int = 10) -> dict:
     with connect_db(db_path) as conn:
         return load_queue_stats(conn, niche=niche, runs_limit=runs_limit)
+
+
+def rebuild_publish_queue(db_path: str | Path, niche: str | None = None) -> dict:
+    with connect_db(db_path) as conn:
+        if niche:
+            rebuilt = rebuild_publish_items(conn, niche=niche)
+            return {"mode": "single", "niche": niche, "rebuilt_rows": rebuilt}
+        rebuilt_by_niche = rebuild_publish_items_all(conn)
+        return {
+            "mode": "all",
+            "niches": rebuilt_by_niche,
+            "rebuilt_rows": sum(rebuilt_by_niche.values()),
+        }
 
 
 def export_n8n_ready_csv(

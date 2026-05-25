@@ -11,6 +11,7 @@ from cf_pinterest.queue_service import (
     get_export_profiles,
     get_queue_stats,
     import_sheet_file_to_queue_db,
+    rebuild_publish_queue,
     sync_report_to_queue_db,
 )
 
@@ -205,6 +206,37 @@ class QueueDbTestCase(unittest.TestCase):
             self.assertEqual(all_stats["niche_counts"].get("fonts"), 2)
             self.assertEqual(all_stats["niche_counts"].get("graphics"), 1)
             self.assertGreaterEqual(len(all_stats["recent_runs"]), 2)
+
+    def test_rebuild_publish_queue(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="cf_queue_rebuild_") as tmp:
+            tmp_path = Path(tmp)
+            db_path = tmp_path / "queue.db"
+            csv_path = tmp_path / "queue.csv"
+            csv_path.write_text(
+                "slug,title,status,pin_jpg,affiliate_url\n"
+                "x1,Font X1,generated,/tmp/x1.jpg,https://example.com/x1\n"
+                "x2,Font X2,uploaded,/tmp/x2.jpg,https://example.com/x2\n",
+                encoding="utf-8",
+            )
+            import_sheet_file_to_queue_db(file_path=csv_path, db_path=db_path, niche="fonts")
+
+            conn = sqlite3.connect(db_path)
+            conn.execute("DELETE FROM publish_items")
+            conn.commit()
+            conn.close()
+
+            result_single = rebuild_publish_queue(db_path=db_path, niche="fonts")
+            self.assertEqual(result_single["mode"], "single")
+            self.assertEqual(result_single["rebuilt_rows"], 2)
+
+            conn = sqlite3.connect(db_path)
+            total = conn.execute("SELECT COUNT(*) FROM publish_items").fetchone()[0]
+            conn.close()
+            self.assertEqual(total, 2)
+
+            result_all = rebuild_publish_queue(db_path=db_path, niche=None)
+            self.assertEqual(result_all["mode"], "all")
+            self.assertGreaterEqual(result_all["rebuilt_rows"], 2)
 
 
 if __name__ == "__main__":

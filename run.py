@@ -28,6 +28,7 @@ from cf_pinterest.queue_service import (
     get_queue_stats,
     get_queue_summary,
     import_sheet_file_to_queue_db,
+    rebuild_publish_queue,
     sync_report_to_queue_db,
 )
 from config import CATEGORIES
@@ -403,6 +404,23 @@ def cmd_queue_stats(db_path: str, tab: str, all_niches: bool, runs_limit: int):
         logger.info("Recent sync runs: no rows")
 
 
+def cmd_queue_rebuild_publish(db_path: str, tab: str, all_niches: bool):
+    """Rebuild publish_items table from queue_items data."""
+    logger.info("Mode: queue rebuild publish")
+    logger.info("DB path: %s", db_path)
+    result = rebuild_publish_queue(db_path=db_path, niche=None if all_niches else tab)
+    if result.get("mode") == "single":
+        logger.info(
+            "[OK] publish_items rebuilt | niche=%s | rows=%d",
+            result.get("niche"),
+            result.get("rebuilt_rows", 0),
+        )
+        return
+    logger.info("[OK] publish_items rebuilt for all niches | rows=%d", result.get("rebuilt_rows", 0))
+    for niche, count in sorted(result.get("niches", {}).items()):
+        logger.info("  niche=%s rows=%d", niche, count)
+
+
 def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync_sheet: bool, upload_vds: bool):
     """Production flow: parse products, download previews, generate pins, optionally sync sheet."""
     logger.info("Mode: prod auto-pin")
@@ -486,6 +504,7 @@ Commands:
   export-n8n-queue  Export final publish queue CSV for n8n
   db-health  Validate SQLite schema and data invariants
   queue-stats  Show queue analytics summary
+  queue-rebuild-publish  Rebuild publish table from technical queue data
   prod-auto-pin  Parse first products, generate prod pins, optionally sync Sheet
   upload-vds  Upload generated pin jpg files from report to VDS
 
@@ -503,6 +522,7 @@ Examples:
   python run.py export-n8n-queue --tab fonts --output ./output/n8n/fonts_publish.csv
   python run.py db-health --db-path ./output/_state/queue.db
   python run.py queue-stats --db-path ./output/_state/queue.db --tab fonts --runs-limit 10
+  python run.py queue-rebuild-publish --db-path ./output/_state/queue.db --all-niches
   python run.py prod-auto-pin --niche fonts --limit 20 --sync-sheet
   python run.py upload-vds --report ./output/prod/fonts/_reports/auto_pin_batch_report.json --sync-sheet
         """,
@@ -720,6 +740,24 @@ Examples:
         default=10,
         help="How many recent sync runs to show (default: 10)",
     )
+    p_rebuild = subparsers.add_parser("queue-rebuild-publish", help="Rebuild publish table from queue_items")
+    p_rebuild.add_argument(
+        "--db-path",
+        default=str(QUEUE_DB_PATH),
+        help="SQLite queue file path (default: output/_state/queue.db)",
+    )
+    p_rebuild.add_argument(
+        "--tab",
+        "-t",
+        default="fonts",
+        choices=list(CATEGORIES.keys()),
+        help="Niche/category scope when --all-niches is not set",
+    )
+    p_rebuild.add_argument(
+        "--all-niches",
+        action="store_true",
+        help="Rebuild publish rows for all niches",
+    )
     p_prod = subparsers.add_parser("prod-auto-pin", help="Production auto-pin run from Creative Fabrica")
     p_prod.add_argument("--niche", "-n", default="fonts", choices=list(CATEGORIES.keys()), help="Category tab (default: fonts)")
     p_prod.add_argument("--limit", "-l", type=int, default=20, help="How many products to process (default: 20)")
@@ -792,6 +830,8 @@ Examples:
         cmd_db_health(db_path=args.db_path)
     elif args.command == "queue-stats":
         cmd_queue_stats(db_path=args.db_path, tab=args.tab, all_niches=args.all_niches, runs_limit=args.runs_limit)
+    elif args.command == "queue-rebuild-publish":
+        cmd_queue_rebuild_publish(db_path=args.db_path, tab=args.tab, all_niches=args.all_niches)
     elif args.command == "prod-auto-pin":
         cmd_prod_auto_pin(
             niche=args.niche,
