@@ -114,6 +114,13 @@ The smoke script validates:
 - scheduler dry-run;
 - optional local `adb` visibility.
 
+By default, external checks (Sheets/Playwright/parser) are warn-only, so smoke tests stay stable in restricted environments.
+Set strict mode when validating full external readiness:
+
+```bash
+CF_SMOKE_STRICT_EXTERNAL=1 python3.12 test_components.py
+```
+
 ## Daily production flow
 
 ### 1. Generate the queue on a Mac or workstation

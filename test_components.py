@@ -23,6 +23,7 @@ from sheets import get_sheet_client
 ROOT = Path(__file__).resolve().parent
 logger = configure_logging("test_components", default_log_name="test_components.log")
 load_dotenv()
+STRICT_EXTERNAL = os.environ.get("CF_SMOKE_STRICT_EXTERNAL", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -83,9 +84,14 @@ def check_google_sheets() -> CheckResult:
     try:
         spreadsheet = get_sheet_client()
         tabs = [ws.title for ws in spreadsheet.worksheets()]
-        return _result("google_sheets", True, f"Connected to '{spreadsheet.title}' with {len(tabs)} tabs")
+        return _result(
+            "google_sheets",
+            True,
+            f"Connected to '{spreadsheet.title}' with {len(tabs)} tabs",
+            required=STRICT_EXTERNAL,
+        )
     except Exception as exc:
-        return _result("google_sheets", False, f"Connection failed: {exc}")
+        return _result("google_sheets", False, f"Connection failed: {exc}", required=STRICT_EXTERNAL)
 
 
 def check_playwright() -> CheckResult:
@@ -96,24 +102,30 @@ def check_playwright() -> CheckResult:
             page.goto("https://www.creativefabrica.com/fonts/", wait_until="domcontentloaded", timeout=30000)
             title = page.title()
             browser.close()
-        return _result("playwright", True, f"Chromium launched successfully; page title='{title[:80]}'")
+        return _result(
+            "playwright",
+            True,
+            f"Chromium launched successfully; page title='{title[:80]}'",
+            required=STRICT_EXTERNAL,
+        )
     except Exception as exc:
-        return _result("playwright", False, f"Playwright smoke failed: {exc}")
+        return _result("playwright", False, f"Playwright smoke failed: {exc}", required=STRICT_EXTERNAL)
 
 
 def check_parser() -> CheckResult:
     try:
         products = parse_category("https://www.creativefabrica.com/fonts/", "fonts", pages=1)
         if not products:
-            return _result("parser", False, "No products returned for fonts page 1")
+            return _result("parser", False, "No products returned for fonts page 1", required=STRICT_EXTERNAL)
         sample = products[0]
         return _result(
             "parser",
             True,
             f"Parsed {len(products)} products; sample slug={sample['slug']}",
+            required=STRICT_EXTERNAL,
         )
     except Exception as exc:
-        return _result("parser", False, f"Parser failed: {exc}")
+        return _result("parser", False, f"Parser failed: {exc}", required=STRICT_EXTERNAL)
 
 
 def check_auto_pin_sample() -> CheckResult:
@@ -171,6 +183,7 @@ def check_phone_stack() -> CheckResult:
 
 
 def main() -> int:
+    logger.info("External checks mode: %s", "strict" if STRICT_EXTERNAL else "warn-only")
     checks = [
         check_env,
         check_credentials,
