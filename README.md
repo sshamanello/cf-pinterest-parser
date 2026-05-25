@@ -54,6 +54,9 @@ Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.
   Runs preflight checks in one command: smoke checks, DB health, and queue stats.
 - `python run.py prod-auto-pin --niche fonts --limit 20 --products-file ./test/products_seed.json`
   Runs production pipeline from local product JSON (bypasses Creative Fabrica parsing; useful during Cloudflare blocks).
+  Product item may contain either:
+  - `image_url` (download path), or
+  - `local_image_path` (offline local file path).
 
 ### Phone automation
 - `python run_phones.py devices`

@@ -87,6 +87,29 @@ def _download_preview(product: dict, input_dir: Path) -> Path | None:
     return path
 
 
+def _prepare_local_preview(product: dict, input_dir: Path) -> Path | None:
+    slug = str(product.get("slug", "")).strip()
+    local_image_path = str(product.get("local_image_path", "")).strip()
+    if not slug or not local_image_path:
+        return None
+
+    src = Path(local_image_path)
+    if not src.exists() or not src.is_file():
+        logger.warning("[%s] local preview file not found: %s", slug, src)
+        return None
+
+    suffix = src.suffix.lower() if src.suffix else ".jpg"
+    if suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+        suffix = ".jpg"
+    if suffix == ".jpeg":
+        suffix = ".jpg"
+
+    dst = input_dir / f"{slug}{suffix}"
+    shutil.copy2(src, dst)
+    logger.info("[%s] local preview copied -> %s", slug, dst)
+    return dst
+
+
 def _enrich_auto_pin_report(report_path: Path, products: list[dict]) -> None:
     raw = json.loads(report_path.read_text(encoding="utf-8"))
     by_slug = {p.get("slug", ""): p for p in products if p.get("slug")}
@@ -253,7 +276,8 @@ def _load_products_file(products_file: str | Path, niche: str) -> list[dict]:
             continue
         slug = str(item.get("slug", "")).strip()
         image_url = str(item.get("image_url", "")).strip()
-        if not slug or not image_url:
+        local_image_path = str(item.get("local_image_path", "")).strip()
+        if not slug or (not image_url and not local_image_path):
             continue
         product = dict(item)
         product.setdefault("niche", niche)
@@ -438,7 +462,9 @@ def run_prod_auto_pin(
     downloaded_products: list[dict] = []
 
     for product in selected:
-        path = _download_preview(product, input_dir)
+        path = _prepare_local_preview(product, input_dir)
+        if path is None:
+            path = _download_preview(product, input_dir)
         if path is None:
             continue
         product = dict(product)
