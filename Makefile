@@ -2,7 +2,8 @@
 
 .PHONY: help parse parse-fonts parse-graphics parse-3d-printing pins test prod-auto-pin \
 	docker-build docker-help docker-shell docker-run-help docker-smoke docker-prod \
-	docker-cron docker-phone logs stop clean clean-logs dist check
+	docker-cron docker-phone logs stop clean clean-logs dist check \
+	ops-check ops-check-strict db-health queue-stats queue-prune-dry queue-prune-apply
 
 parse:
 	python run.py parse
@@ -30,6 +31,24 @@ prod-auto-pin:
 
 check:
 	python test_components.py
+
+ops-check:
+	python run.py ops-check --db-path output/_state/queue.db --tab fonts --runs-limit 10
+
+ops-check-strict:
+	python run.py ops-check --db-path output/_state/queue.db --tab fonts --runs-limit 10 --strict-external
+
+db-health:
+	python run.py db-health --db-path output/_state/queue.db
+
+queue-stats:
+	python run.py queue-stats --db-path output/_state/queue.db --all-niches --runs-limit 20
+
+queue-prune-dry:
+	python run.py queue-prune --db-path output/_state/queue.db --keep-sync-runs 200 --prune-rejected-older-than-days 30
+
+queue-prune-apply:
+	python run.py queue-prune --db-path output/_state/queue.db --keep-sync-runs 200 --prune-rejected-older-than-days 30 --apply
 
 # Docker
 
@@ -79,6 +98,12 @@ help:
 	@echo "  make parse-50         - bulk parsing across categories"
 	@echo "  make prod-auto-pin    - production fonts batch with VDS upload + sheet sync"
 	@echo "  make check            - run smoke checks"
+	@echo "  make ops-check        - smoke + db-health + queue-stats preflight"
+	@echo "  make ops-check-strict - strict external preflight (network/Sheets/Playwright)"
+	@echo "  make db-health        - validate queue DB schema and invariants"
+	@echo "  make queue-stats      - show queue analytics snapshot"
+	@echo "  make queue-prune-dry  - preview cleanup actions"
+	@echo "  make queue-prune-apply - apply cleanup actions"
 	@echo ""
 	@echo "Docker commands:"
 	@echo "  make docker-build     - build the Docker image"
