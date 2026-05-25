@@ -1,0 +1,17 @@
+{
+  "n8n_default": [
+    "slug",
+    "title",
+    "description",
+    "image_url",
+    "target_url",
+    "status",
+    "updated_at"
+  ],
+  "n8n_minimal": [
+    "title",
+    "description",
+    "image_url",
+    "target_url"
+  ]
+}

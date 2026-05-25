@@ -40,6 +40,8 @@ Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.
   - `--format csv|json`
   - `--profile n8n_default|n8n_minimal`
   - `--statuses generated,uploaded` (or empty for all statuses)
+  Profiles are loaded from `cf_pinterest/export_profiles.json`.
+  You can override profile config path with `CF_N8N_EXPORT_PROFILES_PATH=/path/to/profiles.json`.
 
 ### Phone automation
 - `python run_phones.py devices`

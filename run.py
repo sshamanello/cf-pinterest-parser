@@ -23,6 +23,7 @@ from pathlib import Path
 from cf_pinterest.queue_service import (
     export_n8n_ready_json,
     export_n8n_ready_csv,
+    get_export_profiles,
     get_queue_summary,
     import_sheet_file_to_queue_db,
     sync_report_to_queue_db,
@@ -40,6 +41,7 @@ from logging_utils import configure_logging
 
 logger = configure_logging("run", default_log_name="run.log")
 QUEUE_DB_PATH = Path("output/_state/queue.db")
+EXPORT_PROFILE_CHOICES = sorted(get_export_profiles().keys())
 
 
 def cmd_parse(niche: str = None, pages: int = None):
@@ -604,7 +606,7 @@ Examples:
     p_export.add_argument(
         "--profile",
         default="n8n_default",
-        choices=["n8n_default", "n8n_minimal"],
+        choices=EXPORT_PROFILE_CHOICES,
         help="Export profile (default: n8n_default)",
     )
     p_export.add_argument(

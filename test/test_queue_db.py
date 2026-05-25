@@ -7,12 +7,19 @@ from pathlib import Path
 from cf_pinterest.queue_service import (
     export_n8n_ready_csv,
     export_n8n_ready_json,
+    get_export_profiles,
     import_sheet_file_to_queue_db,
     sync_report_to_queue_db,
 )
 
 
 class QueueDbTestCase(unittest.TestCase):
+    def test_export_profiles_loaded(self) -> None:
+        profiles = get_export_profiles()
+        self.assertIn("n8n_default", profiles)
+        self.assertIn("n8n_minimal", profiles)
+        self.assertIn("title", profiles["n8n_default"])
+
     def test_sync_report_to_queue_db_upsert(self) -> None:
         with tempfile.TemporaryDirectory(prefix="cf_queue_db_") as tmp:
             tmp_path = Path(tmp)
