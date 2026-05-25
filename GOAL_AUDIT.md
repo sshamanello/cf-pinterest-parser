@@ -69,6 +69,7 @@ Evidence:
   - `python3 -m py_compile run.py cf_pinterest/*.py test/test_queue_db.py` -> OK
 - Runtime preflight:
   - `python3 run.py ops-check --db-path output/_state/queue.db --tab fonts --runs-limit 5` -> OK
+  - `python3 run.py ops-check --db-path output/_state/queue.db --tab fonts --runs-limit 10 --strict-external` -> OK (`2026-05-25`)
 - Fixed issues during refactor:
   - resilient smoke mode in `test_components.py` with `CF_SMOKE_STRICT_EXTERNAL`
   - extractor numba cache stability fix (from prior commits in branch history)
@@ -82,10 +83,13 @@ Evidence:
 - Reliability controls implemented (`ops-check`, `db-health`, `queue-prune` dry-run, rebuild commands)
 - Automated tests pass
 - In current environment, preflight passes in warn-mode for external services
+- Strict external preflight also passed in this environment (`2026-05-25`)
+- Real prod path execution was validated technically:
+  - `python3 run.py prod-auto-pin --niche fonts --pages 1 --limit 3 --output output/prod/audit_fonts`
+  - pipeline completed successfully and produced report, but parsed `0` products due Creative Fabrica Cloudflare challenge (external source behavior)
 
 Remaining to claim full end-state in production terms:
-- Run `ops-check --strict-external` in target host with valid network + Playwright + Google Sheets access.
-- Run at least one production batch (`prod-auto-pin`) with queue DB flow and validate generated/uploaded metrics.
+- Run at least one production batch (`prod-auto-pin`) in a window/host where Creative Fabrica returns product cards (no active Cloudflare block), then validate generated/uploaded metrics.
 
 8. Ability to test new approaches and analytics  
 Status: `DONE`  
