@@ -52,6 +52,8 @@ Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.
   Shows what would be deleted (dry-run). Add `--apply` to actually delete old data.
 - `python run.py ops-check --db-path output/_state/queue.db --tab fonts --runs-limit 10`
   Runs preflight checks in one command: smoke checks, DB health, and queue stats.
+- `python run.py prod-auto-pin --niche fonts --limit 20 --products-file ./test/products_seed.json`
+  Runs production pipeline from local product JSON (bypasses Creative Fabrica parsing; useful during Cloudflare blocks).
 
 ### Phone automation
 - `python run_phones.py devices`

@@ -48,6 +48,8 @@ This checklist is a practical preflight for stable runs on the refactored branch
 
 - Build batch and sync queue DB:
   - `python3 run.py prod-auto-pin --niche fonts --pages 1 --limit 20 --output output/prod/fonts --upload-vds`
+- If Creative Fabrica is blocked by Cloudflare, run with a local product seed file:
+  - `python3 run.py prod-auto-pin --niche fonts --limit 20 --products-file ./test/products_seed.json --output output/prod/fonts_seed`
 - Optional Google Sheets sync:
   - add `--sync-sheet`
 - Upload from existing report if needed:

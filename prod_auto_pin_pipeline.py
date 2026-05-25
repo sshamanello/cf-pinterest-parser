@@ -236,6 +236,30 @@ def _get_existing_sheet_slugs(niche: str) -> set[str]:
     if not SKIP_EXISTING_SHEET:
         return set()
 
+
+def _load_products_file(products_file: str | Path, niche: str) -> list[dict]:
+    path = Path(products_file)
+    if not path.exists():
+        raise FileNotFoundError(f"Products file not found: {path}")
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    items = raw if isinstance(raw, list) else raw.get("items", [])
+    if not isinstance(items, list):
+        raise ValueError("Products file must contain a list or {'items': [...]} structure")
+
+    products: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        slug = str(item.get("slug", "")).strip()
+        image_url = str(item.get("image_url", "")).strip()
+        if not slug or not image_url:
+            continue
+        product = dict(item)
+        product.setdefault("niche", niche)
+        products.append(product)
+    return products
+
     try:
         spreadsheet = get_sheet_client()
         ensure_tabs(spreadsheet)
@@ -361,6 +385,7 @@ def run_prod_auto_pin(
     output_root: str | Path = "output/prod/fonts",
     pages: int = 1,
     upload_vds: bool = False,
+    products_file: str | Path | None = None,
 ) -> ProdAutoPinResult:
     if niche not in CATEGORIES:
         raise ValueError(f"Unknown niche: {niche}")
@@ -370,16 +395,21 @@ def run_prod_auto_pin(
     input_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(
-        "Starting prod auto-pin | niche=%s | pages=%d | limit=%d | output=%s | upload_vds=%s",
+        "Starting prod auto-pin | niche=%s | pages=%d | limit=%d | output=%s | upload_vds=%s | products_file=%s",
         niche,
         pages,
         limit,
         out_root,
         upload_vds,
+        products_file or "",
     )
 
-    start_page, end_page, window_size = _resolve_page_window(niche, pages)
-    products = parse_category(CATEGORIES[niche], niche, pages=window_size, start_page=start_page)
+    if products_file:
+        start_page, end_page, window_size = 0, 0, 0
+        products = _load_products_file(products_file, niche=niche)
+    else:
+        start_page, end_page, window_size = _resolve_page_window(niche, pages)
+        products = parse_category(CATEGORIES[niche], niche, pages=window_size, start_page=start_page)
     existing_slugs = _get_existing_sheet_slugs(niche)
     selected: list[dict] = []
     skipped_existing = 0
@@ -430,15 +460,16 @@ def run_prod_auto_pin(
         uploaded,
         report_path,
     )
-    _advance_page_window(
-        niche=niche,
-        start_page=start_page,
-        end_page=end_page,
-        window_size=window_size,
-        selected_count=len(selected),
-        downloaded_count=len(downloaded_products),
-        parsed_count=len(products),
-    )
+    if not products_file:
+        _advance_page_window(
+            niche=niche,
+            start_page=start_page,
+            end_page=end_page,
+            window_size=window_size,
+            selected_count=len(selected),
+            downloaded_count=len(downloaded_products),
+            parsed_count=len(products),
+        )
 
     return ProdAutoPinResult(
         niche=niche,

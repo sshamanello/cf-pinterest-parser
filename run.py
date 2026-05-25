@@ -480,12 +480,22 @@ def cmd_ops_check(db_path: str, tab: str, strict_external: bool, runs_limit: int
     logger.info("[OK] ops check completed")
 
 
-def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync_sheet: bool, upload_vds: bool):
+def cmd_prod_auto_pin(
+    niche: str,
+    limit: int,
+    output_root: str,
+    pages: int,
+    sync_sheet: bool,
+    upload_vds: bool,
+    products_file: str | None,
+):
     """Production flow: parse products, download previews, generate pins, optionally sync sheet."""
     logger.info("Mode: prod auto-pin")
     logger.info("Niche: %s", niche)
     logger.info("Limit: %d", limit)
     logger.info("Output root: %s", output_root)
+    if products_file:
+        logger.info("Products file: %s", products_file)
 
     result = run_prod_auto_pin(
         niche=niche,
@@ -493,6 +503,7 @@ def cmd_prod_auto_pin(niche: str, limit: int, output_root: str, pages: int, sync
         output_root=output_root,
         pages=pages,
         upload_vds=upload_vds,
+        products_file=products_file,
     )
     logger.info(
         "[OK] Prod auto-pin | pages: %d-%d | parsed: %d | selected: %d | downloaded: %d | generated: %d | rejected: %d | uploaded: %d",
@@ -588,6 +599,7 @@ Examples:
   python run.py queue-prune --db-path ./output/_state/queue.db --keep-sync-runs 200 --apply
   python run.py ops-check --db-path ./output/_state/queue.db --tab fonts --runs-limit 10
   python run.py prod-auto-pin --niche fonts --limit 20 --sync-sheet
+  python run.py prod-auto-pin --niche fonts --limit 20 --products-file ./test/products_seed.json
   python run.py upload-vds --report ./output/prod/fonts/_reports/auto_pin_batch_report.json --sync-sheet
         """,
     )
@@ -876,6 +888,11 @@ Examples:
     p_prod.add_argument("--output", "-o", default="output/prod/fonts", help="Production output root")
     p_prod.add_argument("--sync-sheet", action="store_true", help="Sync generated prod report to Google Sheet")
     p_prod.add_argument("--upload-vds", action="store_true", help="Upload generated pin_01.jpg files to VDS before Sheet sync")
+    p_prod.add_argument(
+        "--products-file",
+        default=None,
+        help="Optional local JSON file with products list to bypass Creative Fabrica parsing",
+    )
     p_upload = subparsers.add_parser("upload-vds", help="Upload generated pin jpg files from a report to VDS")
     p_upload.add_argument(
         "--report",
@@ -965,6 +982,7 @@ Examples:
             pages=args.pages,
             sync_sheet=args.sync_sheet,
             upload_vds=args.upload_vds,
+            products_file=args.products_file,
         )
     elif args.command == "upload-vds":
         cmd_upload_vds(report_path=args.report, sync_sheet=args.sync_sheet, tab=args.tab)
