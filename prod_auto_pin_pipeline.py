@@ -258,6 +258,15 @@ def upload_report_pins_to_vds(report_path: str | Path) -> int:
 def _get_existing_sheet_slugs(niche: str) -> set[str]:
     if not SKIP_EXISTING_SHEET:
         return set()
+    try:
+        spreadsheet = get_sheet_client()
+        ensure_tabs(spreadsheet)
+        slugs = get_existing_slugs(spreadsheet, niche)
+        logger.info("Loaded %d existing slugs from sheet tab '%s'", len(slugs), niche)
+        return slugs
+    except Exception as exc:
+        logger.warning("Could not load existing slugs from sheet for niche '%s': %s", niche, exc)
+        return set()
 
 
 def _load_products_file(products_file: str | Path, niche: str) -> list[dict]:
@@ -283,16 +292,6 @@ def _load_products_file(products_file: str | Path, niche: str) -> list[dict]:
         product.setdefault("niche", niche)
         products.append(product)
     return products
-
-    try:
-        spreadsheet = get_sheet_client()
-        ensure_tabs(spreadsheet)
-        slugs = get_existing_slugs(spreadsheet, niche)
-        logger.info("Loaded %d existing slugs from sheet tab '%s'", len(slugs), niche)
-        return slugs
-    except Exception as exc:
-        logger.warning("Could not load existing slugs from sheet for niche '%s': %s", niche, exc)
-        return set()
 
 
 def _load_page_cursor_state() -> dict:
