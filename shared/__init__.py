@@ -1,0 +1,1 @@
+"""Shared entrypoints and configuration."""

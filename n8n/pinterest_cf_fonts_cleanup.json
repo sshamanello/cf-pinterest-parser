@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## CF fonts: cleanup VDS\nРаз в час ищет опубликованные строки с remote_image_path и удаляет JPG с VDS. Есть защитная задержка 30 минут после published_at.",
+        "content": "## CF fonts: cleanup published images\nРаз в час удаляет transient pin.jpg с VDS после достаточной задержки после publish. Файл хранится только один и не засоряет VDS.",
         "height": 200,
         "width": 360
       },
@@ -79,7 +79,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const MIN_AGE_MS = 30 * 60 * 1000;\nconst now = Date.now();\n\nconst rows = items.filter((item) => {\n  const row = item.json;\n  const cleanup = String(row.cleanup_status ?? '').trim().toLowerCase();\n  const status = String(row.publish_status ?? '').trim().toLowerCase();\n  const path = String(row.remote_image_path ?? '').trim();\n  const publishedAt = Date.parse(row.published_at || row.uploaded_at || '');\n  const oldEnough = Number.isNaN(publishedAt) || (now - publishedAt >= MIN_AGE_MS);\n\n  return status === 'published'\n    && cleanup !== 'deleted'\n    && Boolean(row.slug)\n    && path.startsWith('/var/www/html/pins/ready/')\n    && oldEnough;\n});\n\nreturn rows.slice(0, 10);\n"
+        "jsCode": "const MIN_AGE_MS = 30 * 60 * 1000;\nconst now = Date.now();\n\nconst rows = items.filter((item) => {\n  const row = item.json;\n  const cleanup = String(row.cleanup_status ?? '').trim().toLowerCase();\n  const status = String(row.publish_status ?? '').trim().toLowerCase();\n  const publishedAt = Date.parse(row.published_at || row.uploaded_at || '');\n  const oldEnough = Number.isNaN(publishedAt) || (now - publishedAt >= MIN_AGE_MS);\n\n  return status === 'published'\n    && cleanup !== 'deleted'\n    && Boolean(row.slug)\n    && oldEnough;\n});\n\nreturn rows.slice(0, 10);\n"
       },
       "id": "1bde73d4-19c9-498f-8506-790e9d617339",
       "name": "Pick cleanup rows",
@@ -92,17 +92,18 @@
     },
     {
       "parameters": {
-        "command": "={{ 'rm -f -- ' + JSON.stringify($json.remote_image_path) }}"
+        "method": "DELETE",
+        "url": "={{ 'https://YOUR_VDS_HOST/pins-api/upload?token=' + $env.PINS_API_TOKEN + '&name=pin.jpg' }}",
+        "options": {}
       },
       "id": "fcfc4396-4318-4d55-91bd-3ea6fb885cad",
       "name": "Delete VDS file",
-      "type": "n8n-nodes-base.executeCommand",
-      "typeVersion": 1,
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
       "position": [
         40,
         120
-      ],
-      "continueOnFail": true
+      ]
     },
     {
       "parameters": {
@@ -116,7 +117,7 @@
           "conditions": [
             {
               "id": "cleanup_ok",
-              "leftValue": "={{ $json.error }}",
+              "leftValue": "={{ $json.ok ?? !$json.error }}",
               "rightValue": "",
               "operator": {
                 "type": "string",
@@ -249,7 +250,7 @@
             "slug": "={{ $('Pick cleanup rows').item.json.slug }}",
             "cleanup_status": "delete_failed",
             "cleanup_at": "={{ $now }}",
-            "error_reason": "={{ $json.error?.message || $json.error || $json.stderr || 'cleanup failed' }}"
+            "error_reason": "={{ $json.error?.message || $json.error || $json.stderr || \"cleanup failed\" }}"
           },
           "matchingColumns": [
             "slug"

@@ -11,19 +11,26 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from auto_pin_pipeline import run_auto_pin_batch
-from config import CATEGORIES
-from parser import parse_category
-from sheets import ensure_tabs, get_existing_slugs, get_sheet_client
+from process.auto_pin_pipeline import run_auto_pin_batch
+from shared.config import CATEGORIES
+from download.parser import parse_category
+from download.sheets import ensure_tabs, get_existing_slugs, get_sheet_client
 
 logger = logging.getLogger(__name__)
 
+IMAGE_BACKEND = os.environ.get("CF_IMAGE_BACKEND", "").strip().lower()
 VDS_SSH_HOST = os.environ.get("VDS_SSH_HOST", "")
 VDS_SSH_USER = os.environ.get("VDS_SSH_USER", "")
 VDS_SSH_PORT = int(os.environ.get("VDS_SSH_PORT", "22"))
 VDS_SSH_PASSWORD = os.environ.get("VDS_SSH_PASSWORD", "")
 VDS_REMOTE_DIR = os.environ.get("VDS_REMOTE_DIR", "/var/www/pins/ready")
 VDS_PUBLIC_BASE_URL = os.environ.get("VDS_PUBLIC_BASE_URL", "")
+VDS_UPLOAD_RETRIES = max(1, int(os.environ.get("VDS_UPLOAD_RETRIES", "3")))
+VDS_UPLOAD_RETRY_DELAY_SECONDS = max(1, int(os.environ.get("VDS_UPLOAD_RETRY_DELAY_SECONDS", "10")))
+VDS_CLEAN_REMOTE_DIR_BEFORE_UPLOAD = os.environ.get("VDS_CLEAN_REMOTE_DIR_BEFORE_UPLOAD", "true").strip().lower() not in {"0", "false", "no"}
+VDS_SINGLE_FILE_MODE = os.environ.get("VDS_SINGLE_FILE_MODE", "true").strip().lower() not in {"0", "false", "no"}
+LOCAL_PUBLISH_DIR = Path(os.environ.get("CF_LOCAL_PUBLISH_DIR", "published/pins/ready"))
+LOCAL_PUBLIC_BASE_URL = os.environ.get("CF_LOCAL_PUBLIC_BASE_URL", "")
 SKIP_EXISTING_SHEET = os.environ.get("CF_SKIP_EXISTING_SHEET", "true").strip().lower() not in {"0", "false", "no"}
 PAGE_CURSOR_FILE = Path(os.environ.get("CF_PAGE_CURSOR_FILE", "output/_state/page_cursor.json"))
 PAGE_CURSOR_MAX = max(1, int(os.environ.get("CF_PAGE_CURSOR_MAX", "100")))
@@ -131,6 +138,20 @@ def _vds_ready() -> bool:
     return bool(VDS_SSH_HOST and VDS_SSH_USER and VDS_PUBLIC_BASE_URL and VDS_REMOTE_DIR)
 
 
+def _local_ready() -> bool:
+    return bool(LOCAL_PUBLIC_BASE_URL and str(LOCAL_PUBLISH_DIR).strip())
+
+
+def _resolve_image_backend() -> str:
+    if IMAGE_BACKEND in {"local", "vds"}:
+        return IMAGE_BACKEND
+    if _local_ready():
+        return "local"
+    if _vds_ready():
+        return "vds"
+    return ""
+
+
 def _ssh_base_cmd() -> list[str]:
     cmd = ["ssh", "-p", str(VDS_SSH_PORT), "-o", "StrictHostKeyChecking=accept-new"]
     return cmd
@@ -186,6 +207,19 @@ def _run_remote_mkdir() -> None:
     _run_password_aware(cmd)
 
 
+def _run_remote_cleanup_dir() -> None:
+    if not VDS_CLEAN_REMOTE_DIR_BEFORE_UPLOAD:
+        return
+    target = f"{VDS_SSH_USER}@{VDS_SSH_HOST}"
+    remote_dir = VDS_REMOTE_DIR.rstrip("/")
+    cleanup_cmd = (
+        f"mkdir -p {VDS_REMOTE_DIR} && "
+        f"find {remote_dir} -mindepth 1 -maxdepth 1 -type f -delete"
+    )
+    logger.info("Cleaning remote VDS directory before upload: %s", VDS_REMOTE_DIR)
+    _run_password_aware(_ssh_base_cmd() + [target, cleanup_cmd])
+
+
 def _upload_file_to_vds(local_path: Path, slug: str) -> dict:
     if not _vds_ready():
         return {
@@ -196,20 +230,46 @@ def _upload_file_to_vds(local_path: Path, slug: str) -> dict:
     import hashlib
 
     suffix = hashlib.sha1(digest).hexdigest()[:10]
-    remote_name = f"{slug}-{suffix}.jpg"
+    remote_name = "pin.jpg" if VDS_SINGLE_FILE_MODE else f"{slug}-{suffix}.jpg"
     remote_path = f"{VDS_REMOTE_DIR.rstrip('/')}/{remote_name}"
     public_url = f"{VDS_PUBLIC_BASE_URL.rstrip('/')}/{remote_name}"
+    if VDS_SINGLE_FILE_MODE:
+        public_url = f"{public_url}?v={suffix}"
     target = f"{VDS_SSH_USER}@{VDS_SSH_HOST}:{remote_path}"
 
-    try:
-        _run_remote_mkdir()
-        cmd = _scp_base_cmd() + [str(local_path), target]
-        _run_password_aware(cmd)
-    except Exception as exc:
-        logger.error("[%s] VDS upload failed: %s", slug, exc)
+    last_error: Exception | None = None
+    for attempt in range(1, VDS_UPLOAD_RETRIES + 1):
+        try:
+            _run_remote_mkdir()
+            _run_remote_cleanup_dir()
+            cmd = _scp_base_cmd() + [str(local_path), target]
+            logger.info(
+                "[%s] VDS upload attempt %d/%d -> %s",
+                slug,
+                attempt,
+                VDS_UPLOAD_RETRIES,
+                public_url,
+            )
+            _run_password_aware(cmd)
+            last_error = None
+            break
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "[%s] VDS upload attempt %d/%d failed: %s",
+                slug,
+                attempt,
+                VDS_UPLOAD_RETRIES,
+                exc,
+            )
+            if attempt < VDS_UPLOAD_RETRIES:
+                time.sleep(VDS_UPLOAD_RETRY_DELAY_SECONDS)
+
+    if last_error is not None:
+        logger.error("[%s] VDS upload failed after %d attempts: %s", slug, VDS_UPLOAD_RETRIES, last_error)
         return {
             "vds_upload_status": "failed",
-            "upload_error": str(exc),
+            "upload_error": str(last_error),
             "remote_image_path": remote_path,
             "public_image_url": public_url,
         }
@@ -222,12 +282,67 @@ def _upload_file_to_vds(local_path: Path, slug: str) -> dict:
         "public_image_url": public_url,
         "uploaded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "cleanup_status": "pending",
+        "upload_backend": "vds",
+    }
+
+
+def _upload_file_locally(local_path: Path, slug: str) -> dict:
+    if not _local_ready():
+        return {
+            "vds_upload_status": "skipped",
+            "upload_error": "missing_local_publish_env",
+        }
+
+    digest = local_path.read_bytes()
+    import hashlib
+
+    suffix = hashlib.sha1(digest).hexdigest()[:10]
+    remote_name = f"{slug}-{suffix}.jpg"
+    published_dir = LOCAL_PUBLISH_DIR.expanduser()
+    published_dir.mkdir(parents=True, exist_ok=True)
+    published_path = published_dir / remote_name
+    public_url = f"{LOCAL_PUBLIC_BASE_URL.rstrip('/')}/{remote_name}"
+
+    try:
+        shutil.copy2(local_path, published_path)
+    except Exception as exc:
+        logger.error("[%s] local publish failed: %s", slug, exc)
+        return {
+            "vds_upload_status": "failed",
+            "upload_error": str(exc),
+            "remote_image_path": str(published_path),
+            "public_image_url": public_url,
+            "upload_backend": "local",
+        }
+
+    logger.info("[%s] local publish complete -> %s", slug, public_url)
+    return {
+        "vds_upload_status": "uploaded",
+        "upload_error": "",
+        "remote_image_path": str(published_path),
+        "public_image_url": public_url,
+        "uploaded_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "cleanup_status": "pending",
+        "upload_backend": "local",
+    }
+
+
+def _upload_file_to_configured_host(local_path: Path, slug: str) -> dict:
+    backend = _resolve_image_backend()
+    if backend == "local":
+        return _upload_file_locally(local_path, slug)
+    if backend == "vds":
+        return _upload_file_to_vds(local_path, slug)
+    return {
+        "vds_upload_status": "skipped",
+        "upload_error": "missing_image_publish_env",
     }
 
 
 def upload_report_pins_to_vds(report_path: str | Path) -> int:
     report = Path(report_path)
-    logger.info("Uploading generated pins from report: %s", report)
+    backend = _resolve_image_backend() or "unconfigured"
+    logger.info("Publishing generated pins from report: %s | backend=%s", report, backend)
     raw = json.loads(report.read_text(encoding="utf-8"))
     uploaded = 0
 
@@ -240,18 +355,21 @@ def upload_report_pins_to_vds(report_path: str | Path) -> int:
             item["vds_upload_status"] = "failed"
             item["upload_error"] = "pin_jpg_missing"
             continue
-        upload_meta = _upload_file_to_vds(local, slug)
+        upload_meta = _upload_file_to_configured_host(local, slug)
         item.update(upload_meta)
         if upload_meta.get("vds_upload_status") == "uploaded":
             uploaded += 1
 
-    raw["vds_upload"] = {
+    summary = {
         "uploaded_count": uploaded,
-        "remote_dir": VDS_REMOTE_DIR,
-        "public_base_url": VDS_PUBLIC_BASE_URL,
+        "backend": backend,
+        "remote_dir": VDS_REMOTE_DIR if backend == "vds" else str(LOCAL_PUBLISH_DIR),
+        "public_base_url": VDS_PUBLIC_BASE_URL if backend == "vds" else LOCAL_PUBLIC_BASE_URL,
     }
+    raw["vds_upload"] = summary
+    raw["image_publish"] = summary
     report.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
-    logger.info("VDS upload summary | uploaded=%d | report=%s", uploaded, report)
+    logger.info("Image publish summary | backend=%s | uploaded=%d | report=%s", backend, uploaded, report)
     return uploaded
 
 

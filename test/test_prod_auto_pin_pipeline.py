@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from prod_auto_pin_pipeline import _load_products_file, _prepare_local_preview
+from process.prod_auto_pin_pipeline import _load_products_file, _prepare_local_preview
 
 
 class ProdAutoPinPipelineTestCase(unittest.TestCase):

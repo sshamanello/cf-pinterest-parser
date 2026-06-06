@@ -12,7 +12,7 @@ from pathlib import Path
 import requests
 from PIL import Image, ImageFilter
 
-from extractor import extract_overlay
+from download.extractor import extract_overlay
 
 logger = logging.getLogger(__name__)
 

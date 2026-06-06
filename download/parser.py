@@ -5,7 +5,7 @@ import time
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-from config import (
+from shared.config import (
     AFFILIATE_URL_TEMPLATE,
     CF_AFFILIATE_ID,
     MIN_DELAY,

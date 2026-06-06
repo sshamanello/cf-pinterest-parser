@@ -4,7 +4,7 @@ Safe to run multiple times — checks before inserting.
 """
 import os
 from dotenv import load_dotenv
-from sheets import get_sheet_client
+from download.sheets import get_sheet_client
 
 load_dotenv()
 

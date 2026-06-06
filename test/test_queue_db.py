@@ -8,11 +8,13 @@ from cf_pinterest.queue_service import (
     export_n8n_ready_csv,
     export_n8n_ready_json,
     get_db_health,
+    get_export_destinations,
     get_export_profiles,
     get_queue_stats,
     import_sheet_file_to_queue_db,
     prune_queue,
     rebuild_publish_queue,
+    resolve_export_destination,
     sync_report_to_queue_db,
 )
 
@@ -23,6 +25,27 @@ class QueueDbTestCase(unittest.TestCase):
         self.assertIn("n8n_default", profiles)
         self.assertIn("n8n_minimal", profiles)
         self.assertIn("title", profiles["n8n_default"])
+
+    def test_export_destinations_and_resolution(self) -> None:
+        destinations = get_export_destinations()
+        self.assertIn("remote", destinations)
+        self.assertIn("local", destinations)
+
+        out_remote, profile_remote = resolve_export_destination(
+            destination="remote",
+            niche="fonts",
+            export_format="csv",
+        )
+        self.assertEqual(profile_remote, "n8n_default")
+        self.assertTrue(out_remote.endswith("output/n8n/remote/fonts_publish.csv"))
+
+        out_local_json, profile_local = resolve_export_destination(
+            destination="local",
+            niche="fonts",
+            export_format="json",
+        )
+        self.assertEqual(profile_local, "n8n_default")
+        self.assertTrue(out_local_json.endswith("output/n8n/local/fonts_publish.json"))
 
     def test_sync_report_to_queue_db_upsert(self) -> None:
         with tempfile.TemporaryDirectory(prefix="cf_queue_db_") as tmp:
@@ -48,6 +71,7 @@ class QueueDbTestCase(unittest.TestCase):
                                 "status": "uploaded",
                                 "title": "Alpha Font v2",
                                 "pin_jpg": "/tmp/a2.jpg",
+                                "public_image_url": "http://example.invalid/pins/ready/alpha.jpg",
                                 "cf_url": "https://example.com/a",
                                 "affiliate_url": "https://example.com/a/ref",
                                 "image_url": "https://example.com/a2.png",
@@ -77,6 +101,7 @@ class QueueDbTestCase(unittest.TestCase):
             self.assertEqual(row[2], "uploaded")
             self.assertEqual(row[3], "fonts")
             self.assertEqual(pub_row[1], "Alpha Font v2")
+            self.assertEqual(pub_row[3], "http://example.invalid/pins/ready/alpha.jpg")
             self.assertEqual(pub_row[5], "uploaded")
 
     def test_import_csv_and_export_n8n(self) -> None:

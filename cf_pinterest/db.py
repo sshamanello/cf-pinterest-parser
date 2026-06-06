@@ -179,7 +179,7 @@ def load_queue_summary(conn: sqlite3.Connection, niche: str) -> dict:
 def rebuild_publish_items(conn: sqlite3.Connection, niche: str) -> int:
     rows = conn.execute(
         """
-        SELECT slug, niche, title, status, pin_jpg, affiliate_url
+        SELECT slug, niche, title, status, pin_jpg, affiliate_url, image_url
         FROM queue_items
         WHERE niche = ?
         """,
@@ -197,7 +197,7 @@ def rebuild_publish_items(conn: sqlite3.Connection, niche: str) -> int:
                 row["niche"],
                 title,
                 f"{title} - ready for Pinterest publishing",
-                row["pin_jpg"] or "",
+                row["image_url"] or row["pin_jpg"] or "",
                 row["affiliate_url"] or "",
                 row["status"] or "",
             )

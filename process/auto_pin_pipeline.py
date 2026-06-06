@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from extractor import SUPPORTED_SUFFIXES, extract_overlay
+from download.extractor import SUPPORTED_SUFFIXES, extract_overlay
 
 logger = logging.getLogger(__name__)
 

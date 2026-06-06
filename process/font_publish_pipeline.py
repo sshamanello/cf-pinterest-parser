@@ -15,7 +15,7 @@ import numpy as np
 import requests
 from PIL import Image, ImageDraw, ImageFilter
 
-from extractor import SUPPORTED_SUFFIXES, extract_overlay
+from download.extractor import SUPPORTED_SUFFIXES, extract_overlay
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,7 @@ from pathlib import Path
 import gspread
 from google.oauth2.service_account import Credentials
 
-from config import (
+from shared.config import (
     AFFILIATE_URL_TEMPLATE,
     CF_AFFILIATE_ID,
     COLUMNS,
@@ -259,6 +259,7 @@ def upsert_auto_pin_report(
         "public_image_url",
         "remote_image_path",
         "vds_upload_status",
+        "upload_backend",
         "uploaded_at",
         "cleanup_status",
         "cleanup_at",
@@ -326,6 +327,7 @@ def upsert_auto_pin_report(
             "public_image_url": item.get("public_image_url", ""),
             "remote_image_path": item.get("remote_image_path", ""),
             "vds_upload_status": item.get("vds_upload_status", ""),
+            "upload_backend": item.get("upload_backend", ""),
             "uploaded_at": item.get("uploaded_at", ""),
             "cleanup_status": item.get("cleanup_status", ""),
             "cleanup_at": "",

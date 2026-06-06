@@ -38,3 +38,31 @@ services:
     environment:
       CF_LOG_DIR: /app/logs
     command: ["scheduler"]
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:1.95.3
+    restart: unless-stopped
+    profiles: ["n8n"]
+    ports:
+      - "${N8N_PORT:-5680}:5678"
+    environment:
+      TZ: ${TZ:-Europe/Moscow}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5680/}
+      N8N_SECURE_COOKIE: "false"
+      N8N_BASIC_AUTH_ACTIVE: ${N8N_BASIC_AUTH_ACTIVE:-true}
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:-change_me}
+      GENERIC_TIMEZONE: ${TZ:-Europe/Moscow}
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
+      N8N_COMMUNITY_PACKAGES_ENABLED: "true"
+      N8N_CUSTOM_EXTENSIONS: /home/node/.n8n/custom
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n:/workflows:ro
+
+volumes:
+  n8n_data:

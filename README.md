@@ -2,46 +2,83 @@
 
 Production-oriented toolkit for turning Creative Fabrica products into a Pinterest publishing queue.
 
-The repository now covers the full workflow for the `fonts` MVP:
-- scrape Creative Fabrica product previews;
-- generate Pinterest pins with the automatic layout pipeline;
-- upload ready JPG assets to a VDS;
-- sync metadata into Google Sheets;
+The repository is organized around three exact stages:
+
+1. Download.
+2. Process.
+3. Publish.
+
+That is the operational model for the `fonts` MVP:
+- download Creative Fabrica product previews and metadata;
+- process them into ready-to-publish pin assets;
 - publish through either `n8n` or Android phone automation;
-- keep daily posting warm and human-looking through a jittered scheduler.
+- keep daily posting warm and human-looking through a jittered scheduler;
 - store a local SQLite queue for stable retries and analytics experiments.
+
+How to read the repo:
+- `download` = scraping, queue import/export, and source metadata;
+- `process` = image extraction, overlay generation, and final pin rendering;
+- `publish` = Pinterest delivery, retries, cleanup, and status updates.
 
 ## Current architecture
 
 ```text
-Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.py
-                -> output/prod/... -> VDS upload -> Google Sheet queue
-                -> n8n or Android phone automation -> Pinterest
+Creative Fabrica
+  -> download
+  -> process
+  -> publish
+
+download:
+  parser.py / extractor.py / cf_pinterest queue sync
+
+process:
+  image_processor.py / comfy_processor.py / font_publish_pipeline.py
+  -> output/prod/.../pin_01.jpg
+
+publish:
+  n8n (base64 from local pin_path) or Android phone automation
+  -> Pinterest
 ```
 
 ## Main entrypoints
 
-### Content pipeline
+### 1. Download
 - `python run.py parse`
   Legacy all-category parse + image processing + Google Sheets write.
-- `python run.py auto-pin --input <file-or-dir> --output <dir>`
-  Runs the automatic pin builder on existing preview files.
-- `python run.py prod-auto-pin --niche fonts --pages 10 --limit 300 --output output/prod/fonts_YYYYMMDD --upload-vds --sync-sheet`
-  Main production batch: parse -> download previews -> generate pins -> upload JPG to VDS -> sync Google Sheet.
-- `python run.py upload-vds --report <report.json> --sync-sheet --tab fonts`
-  Uploads already-generated JPG assets from an existing report.
-- `python run.py sync-queue-db --report <report.json> --tab fonts --db-path output/_state/queue.db`
-  Upserts report data into local SQLite queue storage.
+- `python run.py test`
+  Quick one-page parse smoke.
+- `python run.py pins`
+  Generate pins from source data without the full batch flow.
 - `python run.py import-queue-file --file <queue.csv|queue.xlsx> --tab fonts --db-path output/_state/queue.db`
   Imports historical/exported spreadsheet data into local queue DB.
-- `python run.py export-n8n-queue --tab fonts --output output/n8n/fonts_publish.csv`
-  Exports final publish dataset for n8n ingestion (CSV by default).
+- `python run.py export-n8n-queue --tab fonts --destination local`
+  Exports final publish dataset for n8n ingestion (CSV by default) with destination preset (`local` or `remote`).
   Optional flags:
+  - `--destination local|remote`
   - `--format csv|json`
   - `--profile n8n_default|n8n_minimal`
   - `--statuses generated,uploaded` (or empty for all statuses)
+  - `--output <custom-file>` (override destination default path)
   Profiles are loaded from `cf_pinterest/export_profiles.json`.
   You can override profile config path with `CF_N8N_EXPORT_PROFILES_PATH=/path/to/profiles.json`.
+- `python run.py prepare-n8n-export --tab fonts --destination local`
+  One-shot helper for local/remote n8n: syncs latest `auto_pin_batch_report*.json` to queue DB, then exports publish dataset.
+  Optional flags:
+  - `--report <report.json>` (if omitted, latest report from `output/prod/<tab>/_reports/` is used)
+  - `--skip-sync` (export from current DB state only)
+  - all export flags from `export-n8n-queue` (`--format`, `--profile`, `--statuses`, `--output`, `--limit`)
+
+### 2. Process
+- `python run.py auto-pin --input <file-or-dir> --output <dir>`
+  Runs the automatic pin builder on existing preview files.
+- `python run.py prod-auto-pin --niche fonts --pages 10 --limit 300 --output output/prod/fonts_YYYYMMDD --upload-vds --sync-sheet`
+  Main production batch: parse -> download previews -> generate pins -> publish JPG assets locally or to the configured image host -> sync Google Sheet.
+- `python run.py upload-vds --report <report.json> --sync-sheet --tab fonts`
+  Publishes already-generated JPG assets from an existing report, writing `public_image_url`, `remote_image_path`, and upload status into the report/queue metadata.
+- `python run.py upload-vds-batch --reports-glob 'output/**/_reports/auto_pin_batch_report.json' --sync-sheet --tab fonts`
+  Batch-publishes JPG assets from many reports using one Google Sheets session, useful for migrating old queue rows to a new host or local publish path.
+- `python run.py sync-queue-db --report <report.json> --tab fonts --db-path output/_state/queue.db`
+  Upserts report data into local SQLite queue storage.
 - `python run.py db-health --db-path output/_state/queue.db`
   Validates DB schema/indexes and key invariants (including orphan rows in `publish_items`).
 - `python run.py queue-stats --db-path output/_state/queue.db --tab fonts --runs-limit 10`
@@ -58,32 +95,53 @@ Creative Fabrica -> parser.py -> prod_auto_pin_pipeline.py -> auto_pin_pipeline.
   - `image_url` (download path), or
   - `local_image_path` (offline local file path).
 
-### Phone automation
+### 3. Publish
 - `python run_phones.py devices`
 - `python run_phones.py warmup`
 - `python run_phones.py post --tab fonts`
 - `python scheduler.py`
-
-### Smoke checks
 - `python test_components.py`
 
 ## Repository layout
 
 ```text
-run.py                     Main CLI for scraping, pin generation, VDS upload, and sheet sync
-cf_pinterest/              Modular core (queue models, DB schema, sync service)
-prod_auto_pin_pipeline.py  Production batch orchestrator
-auto_pin_pipeline.py       Automatic pin builder and reporting
-parser.py                  Playwright scraper for Creative Fabrica category pages
-sheets.py                  Google Sheets auth, upsert, and queue helpers
-run_phones.py              CLI for Android phone warmup/post flows
-pinterest_warmup.py        Human-like Pinterest warmup behaviors
-pinterest_post.py          Android UI automation for posting one ready pin
-scheduler.py               5-slot daily phone scheduler with jitter
-logging_utils.py           Shared rotating-file + console logging setup
-deploy/                    systemd unit, udev rule, and bootstrap helper for phone server
-docker-compose.yml         Container roles for one-off runs, cron batches, and phone scheduler
-n8n/                       Importable n8n workflows for publish/cleanup
+root launchers
+  run.py                     Launcher for the full CLI
+  main.py                    Legacy startup wrapper
+  run_phones.py              Launcher for Android phone automation
+  scheduler.py               Launcher for the daily phone scheduler
+  test_components.py         Smoke checks
+
+download/
+  parser.py                  Playwright scraper for Creative Fabrica category pages
+  extractor.py               Image extraction and masking pipeline
+  sheets.py                  Google Sheets auth, upsert, and queue helpers
+
+process/
+  image_processor.py         Automatic pin builder from downloaded previews
+  comfy_processor.py         Optional ComfyUI-assisted image processing
+  font_generator.py          Font asset generation helpers
+  font_publish_pipeline.py    Publish-ready image composition pipeline
+  auto_pin_pipeline.py       Automatic pin batch orchestrator
+  prod_auto_pin_pipeline.py  Production batch orchestrator
+  fix_headers.py             Sheet header repair helper
+
+publish/
+  n8n/                       Importable n8n workflows for publish/cleanup
+  pinterest_post.py          Android UI automation for posting one ready pin
+  pinterest_warmup.py        Human-like Pinterest warmup behaviors
+shared/
+  run.py                     Main CLI across download/process/publish stages
+  main.py                    Compatibility entrypoint
+  config.py                  Shared constants and categories
+  logging_utils.py           Shared rotating-file + console logging setup
+
+deploy/
+  systemd units and bootstrap helpers for phone/server deployment
+
+root infra
+  docker-compose.yml         Container roles for one-off runs, cron batches, and phone scheduler
+  Dockerfile                 Container image for the pipeline
 ```
 
 ## Environment
@@ -103,7 +161,7 @@ GOOGLE_CREDENTIALS_PATH=credentials.json
 ```
 
 Important optional groups:
-- `VDS_*` for autonomous upload + publishing.
+- `VDS_*` for legacy remote publishing, or `CF_IMAGE_BACKEND` + `CF_LOCAL_*` for hosting images directly on this server.
 - `PHONE_ACCOUNTS` for mapping ADB serials to Pinterest accounts.
 - `CF_LOG_*` for log level, retention, and log directory.
 - `CF_CRON_SCHEDULE` / `CF_RUN_COMMAND` for the Docker cron service.
@@ -144,7 +202,15 @@ CF_SMOKE_STRICT_EXTERNAL=1 python3.12 test_components.py
 
 ## Daily production flow
 
-### 1. Generate the queue on a Mac or workstation
+### 1. Download
+
+This stage does the following:
+1. scrapes Creative Fabrica;
+2. downloads the preview cards;
+3. writes queue metadata into the `fonts` sheet;
+4. exports ready rows to local SQLite and n8n-friendly payloads.
+
+### 2. Process
 
 ```bash
 python3.12 run.py prod-auto-pin \
@@ -156,14 +222,12 @@ python3.12 run.py prod-auto-pin \
   --sync-sheet
 ```
 
-This does the following:
-1. scrapes Creative Fabrica;
-2. downloads the preview cards;
-3. generates Pinterest pins and metadata;
-4. uploads `pin_01.jpg` to the VDS;
-5. writes queue metadata into the `fonts` sheet.
+This stage does the following:
+1. generates Pinterest pins and metadata;
+2. produces the final `pin_01.jpg`;
+3. uploads the JPG to the configured image host, or keeps it local for base64 publication.
 
-### 2. Publish from the queue
+### 3. Publish from the queue
 
 You have two production options:
 
@@ -171,6 +235,8 @@ You have two production options:
 Use the workflows in `/n8n`:
 - `pinterest_cf_fonts_publish.json`
 - `pinterest_cf_fonts_cleanup.json`
+
+The current CF fonts publish workflow is backed by PostgreSQL, reads the processed JPG directly from `pin_path`, converts it to base64, and posts that payload to Pinterest. `public_image_url` is still supported in the broader batch pipeline and queue metadata, but it is no longer required by the live CF fonts workflow.
 
 #### Option B. Android phone automation
 - `scheduler.py` runs 5 times per day with jitter;
@@ -180,6 +246,7 @@ Use the workflows in `/n8n`:
 ## Logging
 
 Every main entrypoint now writes both to stdout and a rotating file in `logs/`.
+Structured publish events also go to `data/logs/events.log`.
 
 Default files:
 - `logs/run.log`
@@ -213,10 +280,11 @@ Data model:
 
 ## Docker
 
-The repository includes three container roles:
+The repository includes four container roles:
 - `cf-runner` — one-off command runner;
 - `cf-batch-cron` — daily cron batch service;
 - `cf-phone-scheduler` — phone automation scheduler container.
+- `n8n` — workflow automation + Pinterest posting.
 
 See:
 - [DOCKER.md](DOCKER.md)
@@ -226,20 +294,48 @@ See:
 
 Phone automation deployment assets live in `deploy/`:
 - `deploy/cf-pinterest-scheduler.service`
+- `deploy/cf-pinterest-media.service`
 - `deploy/99-android-xiaomi.rules`
 - `deploy/bootstrap_phone_server.sh`
+- `deploy/import_n8n_workflows.sh`
 
 Typical server flow:
 
 ```bash
-scp -r . nick@server:/home/nick/cf-pinterest-parser
+rsync -av --delete \
+  --exclude '.git' --exclude '.venv' --exclude 'output' --exclude 'logs' \
+  ./ nick@YOUR_SERVER_IP:/home/nick/cf-pinterest-parser/
+
 ssh nick@server
 cd /home/nick/cf-pinterest-parser
 bash deploy/bootstrap_phone_server.sh
+docker compose --profile n8n up -d n8n
+bash deploy/import_n8n_workflows.sh
 ```
 
 For the current Linux phone host, the active service name is:
 - `cf-pinterest-scheduler.service`
+- `cf-pinterest-media.service`
+
+Minimal validation on server:
+
+```bash
+systemctl status cf-pinterest-media.service --no-pager
+docker compose ps n8n cf-batch-cron
+curl -I http://YOUR_SERVER_IP:8088/pins/ready/
+curl -I http://YOUR_SERVER_IP:5680/
+```
+
+Note: on `YOUR_SERVER_IP` port `5678` may already be occupied by a host-level n8n process, so project docker n8n defaults to `5680`.
+
+Operational chain (target state):
+1. `cf-batch-cron` runs `run.py prod-auto-pin` and creates pins.
+2. Local backend publishes images into `published/pins/ready` and serves them on `:8088`.
+3. `n8n` workflow `Pinterest CF Fonts Publish` picks `ready` rows from Google Sheet and posts to Pinterest.
+
+Required env for Pinterest API posting in n8n workflow:
+- `PINTEREST_ACCESS_TOKEN` (Pinterest API bearer token with pin create scope)
+- `PINTEREST_BOARD_ID` (target board id)
 
 ## Known operational risks
 
@@ -267,7 +363,7 @@ The phone scheduler container is included, but for maximum reliability many setu
 - Playwright Chromium is installed and launches.
 - Auto-pin smoke processing on local sample input works.
 - Scheduler dry-run works.
-- New phone server `192.168.10.105` has the scheduler service running.
+- New phone server `YOUR_PHONE_SERVER_IP` has the scheduler service running.
 
 ### Still requiring attention
 - Live Creative Fabrica parsing on the current local workstation is intermittently blocked by Cloudflare (`Just a moment...`).

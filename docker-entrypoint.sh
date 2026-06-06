@@ -21,10 +21,27 @@ start_cron() {
   log "Cron schedule: $CRON_SCHEDULE"
   log "Cron command: $command"
 
+  # Cron does not inherit container env reliably, so persist it explicitly.
+  printenv | while IFS='=' read -r name value; do
+    printf 'export %s=%q\n' "$name" "$value"
+  done > /tmp/cf_env.sh
+  chmod 0600 /tmp/cf_env.sh
+
+  cat > /usr/local/bin/cf-cron-run.sh <<RUNNER
+#!/usr/bin/env bash
+set -euo pipefail
+set -a
+source /tmp/cf_env.sh
+set +a
+cd /app
+$command
+RUNNER
+  chmod 0755 /usr/local/bin/cf-cron-run.sh
+
   cat > /etc/cron.d/cf-pinterest <<CRON
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-$CRON_SCHEDULE cd /app && $command >> $CRON_LOG_FILE 2>&1
+$CRON_SCHEDULE /usr/local/bin/cf-cron-run.sh >> $CRON_LOG_FILE 2>&1
 CRON
 
   chmod 0644 /etc/cron.d/cf-pinterest

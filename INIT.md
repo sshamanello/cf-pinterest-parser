@@ -1,6 +1,6 @@
 # CF Pinterest Parser — Быстрая инициализация проекта
 
-> Последнее обновление: 2026-05-21
+> Последнее обновление: 2026-06-06
 > Этот файл содержит полный контекст проекта для быстрого восстановления работы
 
 ---
@@ -9,6 +9,33 @@
 
 - При любом изменении проекта (код, конфиги, запускные скрипты, инфраструктура, документация) обязательно обновлять `INIT.md` в этом же коммите.
 - В `INIT.md` фиксировать, что именно изменилось и почему это важно для дальнейшей работы.
+
+## Изменения 2026-06-06
+
+- Проект сейчас лучше всего читать как три точных контура:
+  - `download`:
+    - `parser.py`, `extractor.py`, `sheets.py`, `cf_pinterest/`
+    - задача: получить исходные данные и положить их в queue/db.
+  - `process`:
+    - `image_processor.py`, `comfy_processor.py`, `font_generator.py`, `font_publish_pipeline.py`, `prod_auto_pin_pipeline.py`
+    - задача: превратить сырой source в готовый `pin_01.jpg`.
+  - `publish`:
+    - `n8n/`, `pinterest_post.py`, `pinterest_warmup.py`, `run_phones.py`, `scheduler.py`, `deploy/`
+    - задача: отправить готовый asset в Pinterest и зафиксировать статус.
+- Актуальная схема публикации `CF Fonts` теперь не требует `public_image_url`:
+  - live workflow `Pinterest CF Fonts Publish` читает локальный обработанный JPG из `pin_path`,
+  - затем переводит binary в `image_base64`,
+  - и отправляет это в Pinterest API.
+- Это важно для восстановления проекта:
+  - `public_image_url` остаётся в данных очереди и legacy batch-экспортах,
+  - но больше не является обязательным контрактом для live CF fonts publish workflow.
+- На сервере `YOUR_SERVER_IP` активен host-level `n8n`, а не docker-контур:
+  - publish workflow импортирован и опубликован как `Pinterest CF Fonts Publish`,
+  - cleanup workflow остаётся отдельным.
+- Для отладки публикации добавлены структурированные события:
+  - `data/logs/events.log` теперь содержит start/resolve/success/fail events по publish job,
+  - это основной журнал для проверки, когда именно началась публикация и чем она закончилась.
+- Старые заметки про VDS/public_image_url ниже в файле оставлены как исторический контекст, но не описывают текущий live CF-fonts flow.
 
 ## Изменения 2026-04-15
 
@@ -24,9 +51,136 @@
 
 ## Изменения 2026-05-20
 
+## Изменения 2026-05-27
+
+## Изменения 2026-05-31
+
+- Проверено фактическое состояние сервера `YOUR_SERVER_IP`:
+  - `cf-pinterest-media.service` работает (`active`),
+  - `cf-pinterest-scheduler.service` был `inactive`,
+  - `n8n` контейнер отсутствовал в `docker-compose`, поэтому не запускался.
+- Для приведения к целевому pipeline добавлен `n8n` сервис в `docker-compose.yml`:
+  - профиль `n8n`,
+  - публикация `${N8N_PORT}:5678` (default `5680`),
+  - volume `./n8n_data` для состояния n8n,
+  - read-only mount `./n8n:/workflows` для import workflow из репозитория,
+  - базовые переменные `N8N_*` и basic auth.
+- Обновлён `.env.example`:
+  - добавлены `N8N_PORT`, `N8N_HOST`, `N8N_PROTOCOL`, `N8N_WEBHOOK_URL`,
+  - добавлены `N8N_BASIC_AUTH_*`.
+- Добавлен deploy-скрипт `deploy/import_n8n_workflows.sh`:
+  - поднимает `n8n`,
+  - импортирует `n8n/pinterest_cf_fonts_publish.json`,
+  - импортирует `n8n/pinterest_cf_fonts_cleanup.json`.
+- Workflow `n8n/pinterest_cf_fonts_publish.json` обновлён из актуального файла `Pinterest CF Fonts Publish.json` (board/описания/доп. webhook node).
+- Верификация на `n8n 1.95.3` показала, что community node `n8n-nodes-pin-interest.pinInterest` не активируется (`Unrecognized node type`).
+- Для стабильного server-side запуска publish workflow переведён на стандартный `HTTP Request` к `https://api.pinterest.com/v5/pins`:
+  - без зависимости от кастомных нод,
+  - авторизация через env `PINTEREST_ACCESS_TOKEN`,
+  - target board через env `PINTEREST_BOARD_ID`.
+- На сервере `YOUR_SERVER_IP` в контейнерный `n8n` импортирован `googleApi` credential с id `Ofs0HJAih2ZMwneg`, чтобы workflow мог читать/обновлять Google Sheet (`fonts`).
+- Workflow `Pinterest CF Fonts Publish` и `Pinterest CF Fonts Cleanup` сейчас стартуют как `Started` после рестарта `n8n`.
+- Фактический текущий блокер публикации в Pinterest:
+  - при webhook/trigger execution Pinterest API отвечает `401 Authentication failed`,
+  - значит требуется рабочий `PINTEREST_ACCESS_TOKEN` (и корректный `PINTEREST_BOARD_ID`) в серверном `.env`.
+- Проверка генерации/публикации изображений подтверждена:
+  - `run.py prod-auto-pin --products-file ./test/products_seed.json --limit 1 --upload-vds --sync-sheet` успешно отработал на сервере,
+  - pin сгенерирован, загружен в `published/pins/ready`, строка синхронизирована в Google Sheet.
+- `README.md` синхронизирован с реальным серверным runbook:
+  - деплой через `rsync` на `YOUR_SERVER_IP`,
+  - запуск `docker compose --profile n8n up -d n8n`,
+  - импорт workflow через `deploy/import_n8n_workflows.sh`,
+  - добавлены проверки `systemctl`, `docker compose ps`, `curl` и целевая цепочка `batch -> media -> n8n -> Pinterest`.
+- На сервере обнаружен уже запущенный host-level `n8n` (`/root/.hermes/node/bin/n8n`) на порту `5678`, поэтому docker `n8n` для проекта переведён на `5680` по умолчанию.
+
+- Восстановлена рабочая git-основа проекта в `/home/nick/cf-pinterest-parser`:
+  - исходная рабочая директория оказалась неполной и без `.git`,
+  - история и недостающие файлы были подняты из резервной копии `/home/nick/Copy of cf-pinterest-parser`,
+  - локальные `output/`, `logs/` и серверный `.env` сохранены как есть.
+- Для срочного перевода n8n с внешнего VDS на текущий сервер создана отдельная ветка:
+  - `fix/local-image-server`
+- Основная продуктовая цель текущего прохода:
+  - не зависеть от `YOUR_VDS_IP` для `public_image_url`,
+  - публиковать JPG прямо с этой машины `YOUR_SERVER_IP`,
+  - сохранить совместимость с текущими Google Sheet / n8n полями без переделки всей очереди.
+- Что изменено в коде:
+  - `prod_auto_pin_pipeline.py` теперь поддерживает два backend-а публикации изображений:
+    - `vds` — старая схема через `scp/ssh`,
+    - `local` — новая схема через локальное копирование в каталог сервера.
+  - выбор backend-а управляется так:
+    - если `CF_IMAGE_BACKEND=local`, используется локальная публикация,
+    - если backend не задан, но заполнены `CF_LOCAL_*`, локальная схема тоже выбирается автоматически,
+    - если локальная схема не настроена, остаётся совместимый fallback на `VDS_*`.
+  - при локальной публикации:
+    - `pin_01.jpg` копируется в `published/pins/ready/`,
+    - в отчёт и в Sheet пишутся:
+      - `public_image_url`
+      - `remote_image_path`
+      - `vds_upload_status=uploaded` (поле сохранено ради совместимости текущего workflow)
+      - `upload_backend=local`
+  - текущий рекомендуемый URL-базис для этой машины:
+    - `CF_LOCAL_PUBLIC_BASE_URL=http://YOUR_SERVER_IP:8088/pins/ready`
+- Что изменено для n8n/очереди:
+  - `cf_pinterest/queue_service.py` теперь при sync в локальную SQLite queue предпочитает:
+    - `public_image_url`,
+    - затем `pin_jpg`,
+    - и только потом исходный `image_url`,
+  - `cf_pinterest/db.py` при rebuild publish-очереди использует уже publish-ready URL/путь, а не только локальный `pin_jpg`,
+  - это важно для `export-n8n-queue` и `prepare-n8n-export`, чтобы в n8n не уезжал старый preview URL Creative Fabrica вместо готового publish asset.
+- Что изменено в Sheet / cleanup:
+  - `sheets.py` добавляет колонку `upload_backend`,
+  - workflow `n8n/pinterest_cf_fonts_cleanup.json` теперь умеет чистить:
+    - новый локальный путь `/home/nick/cf-pinterest-parser/published/pins/ready/`,
+    - старые VDS пути `/var/www/html/pins/ready/` и `/var/www/pins/ready/`.
+- Что добавлено по инфраструктуре текущего сервера:
+  - `deploy/cf-pinterest-media.service`
+    - systemd unit для HTTP-раздачи каталога `published/` на порту `8088`,
+  - `deploy/bootstrap_phone_server.sh`
+    - теперь создаёт `published/pins/ready`,
+    - устанавливает и включает не только `cf-pinterest-scheduler.service`, но и `cf-pinterest-media.service`,
+  - `Makefile`:
+    - добавлен `make media-serve` для быстрого ручного старта локальной раздачи без systemd.
+- Новые/важные env-переменные:
+  - `CF_IMAGE_BACKEND=local`
+  - `CF_LOCAL_PUBLISH_DIR=published/pins/ready`
+  - `CF_LOCAL_PUBLIC_BASE_URL=http://YOUR_SERVER_IP:8088/pins/ready`
+- Практический operational смысл:
+  - если старая VDS раздача недоступна или ломает загрузку картинок в n8n, новый batch может публиковать файлы сразу на этой машине;
+  - n8n продолжает работать через `public_image_url`, но источник URL теперь локально контролируется текущим сервером.
+- Живая проверка на этой машине выполнена:
+  - `cf-pinterest-media.service` установлен и запущен через systemd,
+  - `run.py upload-vds --report output/server_smoke_20260520_final/_reports/auto_pin_batch_report.json` отработал уже в режиме `backend=local`,
+  - опубликован файл:
+    - `published/pins/ready/ladybug-51-9eb04db6c3.jpg`
+  - записанный URL:
+    - `http://YOUR_SERVER_IP:8088/pins/ready/ladybug-51-9eb04db6c3.jpg`
+  - проверка `curl -I` на этот URL вернула `HTTP/1.0 200 OK`.
+- Для массовой миграции старой очереди добавлена пакетная CLI-команда:
+  - `python run.py upload-vds-batch --reports-glob 'output/**/_reports/auto_pin_batch_report.json' --sync-sheet --tab fonts`
+  - смысл команды:
+    - один `Spreadsheet` client,
+    - один `ensure_tabs(...)`,
+    - дальше цикл по отчётам без лишнего повторного bootstrap на каждый файл,
+    - это снижает риск `429 quota exceeded` при массовом переписывании старых `public_image_url`.
+- Фактически выполненная миграция `2026-05-27`:
+  - крупные batch-отчёты `docker_prod`, `docker_prod_bootstrap_20260521`, `docker_prod_manual_20260521_p11` уже переписаны на локальный host и синхронизированы в Google Sheet;
+  - затем через `upload-vds-batch` добиты `server_*` отчёты;
+  - суммарно локальная раздача получила больше `100` publish-ready JPG;
+  - Google Sheet `fonts` массово обновлён на `public_image_url` вида:
+    - `http://YOUR_SERVER_IP:8088/pins/ready/<slug>-<hash>.jpg`
+- Локальная SQLite queue тоже приведена в актуальное состояние:
+  - все найденные `auto_pin_batch_report.json` заново синхронизированы через `sync-queue-db`,
+  - `export-n8n-queue --destination local --format json` теперь отдаёт записи с локальными `image_url` на `YOUR_SERVER_IP:8088`,
+  - это подтверждает, что локальный queue/export слой больше не завязан на старый `YOUR_VDS_IP`.
+- Риски/ограничения, которые важно помнить:
+  - URL из `CF_LOCAL_PUBLIC_BASE_URL` должен быть достижим для того, кто реально забирает картинку:
+    - как минимум для самого n8n,
+    - а если Pinterest node требует внешне доступный URL, то и для внешнего интернета/публичного маршрута тоже.
+  - То есть перенос на текущий сервер убирает зависимость от старого VDS, но не отменяет сетевую необходимость доступности URL.
+
 ## Изменения 2026-05-21
 
-- Проверка спустя сутки на сервере `192.168.10.122` показала:
+- Проверка спустя сутки на сервере `YOUR_SERVER_IP` показала:
   - реальные скачивания и обработки были только в ручных/тестовых прогонах `2026-05-20`,
   - автоматический batch-контур на генерацию новых шрифтов сам по себе ещё не был поднят.
 - Найдена продуктовая проблема старой логики `prod-auto-pin`:
@@ -74,11 +228,11 @@
 - Для текущей production-идеи это важный operational принцип:
   - cron-контур теперь должен не “гонять тестовый один шрифт”, а стабильно накапливать новые позиции в Sheet/VDS без дублей и без зацикливания на первых страницах каталога.
 
-- Начата полноценная Docker-проверка уже на новом сервере `192.168.10.122`:
+- Начата полноценная Docker-проверка уже на новом сервере `YOUR_SERVER_IP`:
   - проект загружен в `/home/nick/cf-pinterest-parser`,
   - на сервер установлен `docker-compose` (package `docker-compose`, version `2.26.1-4`),
   - `docker-compose config` проходит успешно.
-- Во время первой server-side сборки на `10.122` был transient сбой доступа Docker к Docker Hub:
+- Во время первой server-side сборки на новом сервере был transient сбой доступа Docker к Docker Hub:
   - `docker-compose build` упал на `failed to fetch anonymous token` для `python:3.11-slim`,
   - прямой `curl` до `auth.docker.io` и `registry-1.docker.io` с сервера отвечал нормально,
   - повторный `docker pull python:3.11-slim` прошёл успешно,
@@ -90,11 +244,11 @@
 - Исправление:
   - в `Dockerfile` в apt-зависимости добавлен `libgl1`,
   - это обязательный пакет для smoke/production запуска `opencv` внутри Docker на Linux.
-- Во время live e2e-прогона на `10.122` найден ещё один infrastructure-узкий момент:
+- Во время live e2e-прогона на новом сервере найден ещё один infrastructure-узкий момент:
   - VDS upload внутри контейнера сначала не работал из-за серверного `.env`:
     - `VDS_SSH_HOST` был задан как локальный alias `cf-pinterest-vds`,
     - `VDS_SSH_PASSWORD` на новом сервере был пустым.
-  - после перевода `VDS_SSH_HOST` на реальный IP `87.120.219.4` и заполнения пароля выяснилось,
+  - после перевода `VDS_SSH_HOST` на реальный IP `YOUR_VDS_IP` и заполнения пароля выяснилось,
     что ветка `expect` внутри контейнера остаётся менее надёжной, чем `sshpass`.
 - Исправление для контейнера:
   - в `Dockerfile` добавлен `sshpass`,
@@ -203,20 +357,20 @@
     - live parser для Creative Fabrica на этом workstation упирается в Cloudflare challenge (`Just a moment...`)
     - это честно зафиксировано как текущий внешний риск production-пайплайна.
 - Новая серверная точка для phone automation:
-  - актуальный хост: `192.168.10.105`
+  - актуальный хост: `YOUR_PHONE_SERVER_IP`
   - состояние на момент последней проверки:
     - `cf-pinterest-scheduler.service` запущен и `active (running)`,
     - `scheduler.log` пишется,
     - `adb devices -l` в момент проверки не показал подключённого устройства.
 - Важно:
-  - старый серверный контекст на `192.168.10.61` больше не считать актуальным для текущего развёртывания,
-  - для новой машины `10.105` нужна отдельная живая проверка с реально подключённым телефоном:
+  - старый серверный контекст больше не считать актуальным для текущего развёртывания,
+  - для новой машины нужна отдельная живая проверка с реально подключённым телефоном:
     - `adb devices -l`
     - `python run_phones.py warmup`
     - `python run_phones.py post --tab fonts`
 - Docker-файлы и документация подготовлены, но в этой рабочей среде не было локального `docker` CLI,
   поэтому полный `docker compose build/run` в рамках текущего прохода не выполнялся.
-- Во время реальной Docker-проверки на сервере `192.168.10.105` найден конфликт в `requirements.txt`:
+- Во время реальной Docker-проверки на сервере `YOUR_PHONE_SERVER_IP` найден конфликт в `requirements.txt`:
   - `droidrun==0.4.26` требовал `python-dotenv>=1.2.1`,
   - проект был pinned на `python-dotenv==1.0.1`,
   - при этом `droidrun` кодом не используется.
@@ -343,10 +497,10 @@
   - `n8n/pinterest_cf_fonts_cleanup.json`
 - `Pinterest CF Fonts Publish`:
   - запускается раз в 5 часов,
-  - читает вкладку `fonts` в Google Sheet,
+  - читает очередь PostgreSQL для `fonts`,
   - берёт первую строку с `publish_status=ready`, `vds_upload_status=uploaded`, `posted != TRUE`, заполненными `public_image_url`, `affiliate_url`, `slug`,
   - создаёт Pinterest pin через уже существующий Pinterest credential/board из старого workflow,
-  - картинку берёт из `public_image_url`,
+  - картинку берёт из `public_image_url` обработанного и уже опубликованного локального файла,
   - ссылку клика ставит на `affiliate_url`,
   - заголовок pin берётся из `hook_text`; если hook пустой, fallback: `<title> for Cricut & Crafts`,
   - описание pin расширено SEO-текстом про Cricut, SVG, sublimation, printables, branding, invitations, stickers и download page,
@@ -382,7 +536,7 @@
   - если `sshpass` отсутствует, используется `/usr/bin/expect`,
   - это важно для текущего Mac, где `sshpass` не установлен.
 - Так как домена для VDS пока нет, для текущей загрузки используем public base через IP:
-  - `http://87.120.219.4/pins/ready`
+  - `http://YOUR_VDS_IP/pins/ready`
 - После upload в `auto_pin_batch_report.json` пишутся:
   - `public_image_url`
   - `remote_image_path`

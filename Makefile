@@ -2,7 +2,7 @@
 
 .PHONY: help parse parse-fonts parse-graphics parse-3d-printing pins test prod-auto-pin \
 	docker-build docker-help docker-shell docker-run-help docker-smoke docker-prod \
-	docker-cron docker-phone logs stop clean clean-logs dist check \
+	docker-cron docker-phone media-serve logs stop clean clean-logs dist check \
 	ops-check ops-check-strict db-health queue-stats queue-prune-dry queue-prune-apply
 
 parse:
@@ -50,6 +50,10 @@ queue-prune-dry:
 queue-prune-apply:
 	python run.py queue-prune --db-path output/_state/queue.db --keep-sync-runs 200 --prune-rejected-older-than-days 30 --apply
 
+media-serve:
+	mkdir -p published/pins/ready
+	python3 -m http.server 8088 --bind 0.0.0.0 --directory published
+
 # Docker
 
 docker-build:
@@ -96,7 +100,8 @@ help:
 	@echo "Local commands:"
 	@echo "  make parse            - parse + pins + sheet sync"
 	@echo "  make parse-50         - bulk parsing across categories"
-	@echo "  make prod-auto-pin    - production fonts batch with VDS upload + sheet sync"
+	@echo "  make prod-auto-pin    - production fonts batch with image publish + sheet sync"
+	@echo "  make media-serve      - serve ./published over HTTP on port 8088"
 	@echo "  make check            - run smoke checks"
 	@echo "  make ops-check        - smoke + db-health + queue-stats preflight"
 	@echo "  make ops-check-strict - strict external preflight (network/Sheets/Playwright)"

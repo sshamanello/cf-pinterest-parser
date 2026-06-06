@@ -14,7 +14,7 @@ This report reflects the latest validation pass done while preparing the project
 - Playwright Chromium is installed and launches.
 - Local auto-pin processing on a sample preview image works.
 - `scheduler.py --dry-run` works.
-- New Linux phone server `192.168.10.105` has the scheduler service running.
+- New Linux phone server has the scheduler service running.
 
 ### Warnings
 - Local workstation does not currently have `adb` installed, so direct phone checks were not executed from this Mac.
@@ -68,7 +68,7 @@ Mode breakdown:
 
 This confirms that the generation, VDS upload, and sheet synchronization pipeline has already worked in production conditions.
 
-## Server check (`192.168.10.105`)
+## Server check
 
 Validation command used remotely:
 ```bash
@@ -103,10 +103,10 @@ Observed status:
 ### Not fully green yet
 - live Creative Fabrica scraping from the current workstation
 - Docker runtime build validation on an actual Docker-capable host
-- live ADB device presence on `192.168.10.105` during the check window
+- live ADB device presence on the phone server during the check window
 
 ## Recommended next checks
 1. Re-run parser smoke from the machine/IP that will actually do batch generation.
 2. Run `docker compose build` on a host with Docker installed.
-3. Re-attach the Android phone to `192.168.10.105` and confirm `adb devices -l` shows `device`.
+3. Re-attach the Android phone to the phone server and confirm `adb devices -l` shows `device`.
 4. After that, run one real `run_phones.py warmup` and one real `run_phones.py post --tab fonts` on the new server.

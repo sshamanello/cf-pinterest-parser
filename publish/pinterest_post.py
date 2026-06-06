@@ -17,8 +17,8 @@ from pathlib import Path
 
 import uiautomator2 as u2
 
-from phone_manager import download_image
-from sheets import get_sheet_client
+from publish.phone_manager import download_image
+from download.sheets import get_sheet_client
 
 logger = logging.getLogger(__name__)
 

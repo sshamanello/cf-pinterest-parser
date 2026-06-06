@@ -14,11 +14,11 @@ from pathlib import Path
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
-from auto_pin_pipeline import run_auto_pin_batch
-from config import GOOGLE_CREDENTIALS_PATH
-from logging_utils import configure_logging
-from parser import parse_category
-from sheets import get_sheet_client
+from process.auto_pin_pipeline import run_auto_pin_batch
+from shared.config import GOOGLE_CREDENTIALS_PATH
+from shared.logging_utils import configure_logging
+from download.parser import parse_category
+from download.sheets import get_sheet_client
 
 ROOT = Path(__file__).resolve().parent
 logger = configure_logging("test_components", default_log_name="test_components.log")

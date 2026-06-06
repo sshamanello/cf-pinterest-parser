@@ -21,8 +21,24 @@ DEFAULT_N8N_EXPORT_PROFILES: dict[str, list[str]] = {
     "n8n_default": ["slug", "title", "description", "image_url", "target_url", "status", "updated_at"],
     "n8n_minimal": ["title", "description", "image_url", "target_url"],
 }
+DEFAULT_EXPORT_DESTINATIONS: dict[str, dict[str, str]] = {
+    "remote": {
+        "profile": "n8n_default",
+        "output_dir": "output/n8n/remote",
+    },
+    "local": {
+        "profile": "n8n_default",
+        "output_dir": "output/n8n/local",
+    },
+}
 EXPORT_PROFILES_PATH = Path(
     os.environ.get("CF_N8N_EXPORT_PROFILES_PATH", str(Path(__file__).resolve().parent / "export_profiles.json"))
+)
+EXPORT_DESTINATIONS_PATH = Path(
+    os.environ.get(
+        "CF_N8N_EXPORT_DESTINATIONS_PATH",
+        str(Path(__file__).resolve().parent / "export_destinations.json"),
+    )
 )
 
 
@@ -53,6 +69,62 @@ def get_export_profiles() -> dict[str, list[str]]:
     return _load_export_profiles()
 
 
+def _load_export_destinations() -> dict[str, dict[str, str]]:
+    if not EXPORT_DESTINATIONS_PATH.exists():
+        return DEFAULT_EXPORT_DESTINATIONS
+
+    try:
+        raw = json.loads(EXPORT_DESTINATIONS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return DEFAULT_EXPORT_DESTINATIONS
+
+    if not isinstance(raw, dict):
+        return DEFAULT_EXPORT_DESTINATIONS
+
+    destinations: dict[str, dict[str, str]] = {}
+    for name, config in raw.items():
+        if not isinstance(name, str) or not isinstance(config, dict):
+            continue
+        profile = str(config.get("profile") or "").strip()
+        output_dir = str(config.get("output_dir") or "").strip()
+        if profile and output_dir:
+            destinations[name] = {"profile": profile, "output_dir": output_dir}
+
+    return destinations or DEFAULT_EXPORT_DESTINATIONS
+
+
+def get_export_destinations() -> dict[str, dict[str, str]]:
+    return _load_export_destinations()
+
+
+def resolve_export_destination(
+    *,
+    destination: str,
+    niche: str,
+    export_format: str,
+    output_path: str | None = None,
+    profile: str | None = None,
+) -> tuple[str, str]:
+    destinations = _load_export_destinations()
+    if destination not in destinations:
+        supported = ", ".join(sorted(destinations.keys()))
+        raise ValueError(f"Unknown export destination '{destination}'. Supported: {supported}")
+
+    export_profiles = _load_export_profiles()
+    resolved_profile = (profile or destinations[destination]["profile"]).strip()
+    if resolved_profile not in export_profiles:
+        supported = ", ".join(sorted(export_profiles.keys()))
+        raise ValueError(f"Unknown export profile '{resolved_profile}'. Supported: {supported}")
+
+    if output_path:
+        resolved_output = output_path
+    else:
+        ext = "json" if export_format == "json" else "csv"
+        resolved_output = str(Path(destinations[destination]["output_dir"]) / f"{niche}_publish.{ext}")
+
+    return resolved_output, resolved_profile
+
+
 def _row_to_queue_item(row: dict, niche: str) -> QueueItem | None:
     slug = str(row.get("slug") or "").strip()
     if not slug:
@@ -60,6 +132,13 @@ def _row_to_queue_item(row: dict, niche: str) -> QueueItem | None:
         slug = Path(source_file).stem if source_file else ""
     if not slug:
         return None
+
+    publish_image_url = str(
+        row.get("public_image_url")
+        or row.get("pin_jpg")
+        or row.get("image_url")
+        or ""
+    )
 
     return QueueItem(
         slug=slug,
@@ -69,7 +148,7 @@ def _row_to_queue_item(row: dict, niche: str) -> QueueItem | None:
         pin_jpg=str(row.get("pin_jpg") or ""),
         cf_url=str(row.get("cf_url") or ""),
         affiliate_url=str(row.get("affiliate_url") or ""),
-        image_url=str(row.get("image_url") or ""),
+        image_url=publish_image_url,
         source_file=str(row.get("source_file") or ""),
     )
 
