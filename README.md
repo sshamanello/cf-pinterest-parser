@@ -139,6 +139,9 @@ shared/
 deploy/
   systemd units and bootstrap helpers for phone/server deployment
 
+docs/
+  all project documentation and runbooks
+
 root infra
   docker-compose.yml         Container roles for one-off runs, cron batches, and phone scheduler
   Dockerfile                 Container image for the pipeline
@@ -287,8 +290,8 @@ The repository includes four container roles:
 - `n8n` — workflow automation + Pinterest posting.
 
 See:
-- [DOCKER.md](DOCKER.md)
-- [DOCKER_QUICKSTART.md](DOCKER_QUICKSTART.md)
+- [DOCKER.md](docs/DOCKER.md)
+- [DOCKER_QUICKSTART.md](docs/DOCKER_QUICKSTART.md)
 
 ## Server deployment
 
