@@ -1,10 +1,68 @@
 services:
-  cf-parser:
+  cf-runner: &cf-base
     build: .
-    container_name: cf-parser
     env_file: .env
     volumes:
-      - ./output:/app/output                          # пины сохраняются на хосте
-      - ./credentials.json:/app/credentials.json:ro  # ключ Google (read-only)
-    shm_size: '1gb'    # Chromium требует увеличенного /dev/shm
-    restart: "no"      # запускается по cron, не как демон
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+    shm_size: "1gb"
+    restart: "no"
+    command: ["run", "python", "run.py", "--help"]
+
+  cf-batch-cron:
+    <<: *cf-base
+    restart: unless-stopped
+    profiles: ["cron"]
+    environment:
+      CF_CRON_SCHEDULE: ${CF_CRON_SCHEDULE:-10 * * * *}
+      CF_RUN_COMMAND: ${CF_RUN_COMMAND:-python run.py prod-auto-pin --niche fonts --pages 100 --limit 120 --output output/docker_prod --upload-vds --sync-sheet}
+      CF_SKIP_EXISTING_SHEET: ${CF_SKIP_EXISTING_SHEET:-true}
+      CF_PAGE_CURSOR_FILE: ${CF_PAGE_CURSOR_FILE:-output/_state/page_cursor.json}
+      CF_PAGE_CURSOR_MAX: ${CF_PAGE_CURSOR_MAX:-1000}
+      CF_ADAPTIVE_ENABLED: ${CF_ADAPTIVE_ENABLED:-true}
+      CF_ADAPTIVE_TARGET_NEW: ${CF_ADAPTIVE_TARGET_NEW:-50}
+      CF_ADAPTIVE_MAX_PAGES_PER_RUN: ${CF_ADAPTIVE_MAX_PAGES_PER_RUN:-300}
+    command: ["cron"]
+
+  cf-phone-scheduler:
+    <<: *cf-base
+    restart: unless-stopped
+    profiles: ["phone"]
+    privileged: true
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+      - /dev/bus/usb:/dev/bus/usb
+    environment:
+      CF_LOG_DIR: /app/logs
+    command: ["scheduler"]
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:1.95.3
+    restart: unless-stopped
+    profiles: ["n8n"]
+    ports:
+      - "${N8N_PORT:-5680}:5678"
+    environment:
+      TZ: ${TZ:-Europe/Moscow}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5680/}
+      N8N_SECURE_COOKIE: "false"
+      N8N_BASIC_AUTH_ACTIVE: ${N8N_BASIC_AUTH_ACTIVE:-true}
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:-change_me}
+      GENERIC_TIMEZONE: ${TZ:-Europe/Moscow}
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "false"
+      N8N_COMMUNITY_PACKAGES_ENABLED: "true"
+      N8N_CUSTOM_EXTENSIONS: /home/node/.n8n/custom
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n:/workflows:ro
+
+volumes:
+  n8n_data:

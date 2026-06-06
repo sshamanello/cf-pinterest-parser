@@ -1,0 +1,10 @@
+{
+  "remote": {
+    "profile": "n8n_default",
+    "output_dir": "output/n8n/remote"
+  },
+  "local": {
+    "profile": "n8n_default",
+    "output_dir": "output/n8n/local"
+  }
+}

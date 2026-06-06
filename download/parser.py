@@ -5,7 +5,7 @@ import time
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-from config import (
+from shared.config import (
     AFFILIATE_URL_TEMPLATE,
     CF_AFFILIATE_ID,
     MIN_DELAY,
@@ -60,6 +60,21 @@ _EXTRACT_JS = """
 """
 
 
+def _cloudflare_gate_visible(page_obj) -> bool:
+    try:
+        title = (page_obj.title() or "").strip().lower()
+    except Exception:
+        title = ""
+    if "just a moment" in title:
+        return True
+    try:
+        body = (page_obj.text_content("body") or "").lower()
+    except Exception:
+        body = ""
+    markers = ("checking your browser", "verify you are human", "cloudflare")
+    return any(marker in body for marker in markers)
+
+
 def _slug_from_url(url: str) -> str | None:
     match = re.search(r"/product/([^/]+)/?", url)
     return match.group(1) if match else None
@@ -71,17 +86,20 @@ def _build_page_url(base_url: str, page: int) -> str:
     return base_url.rstrip("/") + f"/page/{page}/"
 
 
-def parse_category(url: str, niche: str, pages: int = PAGES_PER_RUN) -> list[dict]:
+def parse_category(url: str, niche: str, pages: int = PAGES_PER_RUN, start_page: int = 1) -> list[dict]:
     """
-    Scrape `pages` pages of a CF category using a real Chromium browser.
+    Scrape `pages` pages of a CF category using a real Chromium browser,
+    starting from `start_page`.
     Returns a list of product dicts with keys:
         title, image_url, cf_url, affiliate_url, slug, niche
     """
     all_products: list[dict] = []
     seen_slugs: set[str] = set()  # dedup across pages within one run
+    first_page = max(1, int(start_page))
+    last_page = first_page + max(0, int(pages)) - 1
 
     with sync_playwright() as pw:
-        for page_num in range(1, pages + 1):
+        for page_num in range(first_page, last_page + 1):
             page_url = _build_page_url(url, page_num)
             logger.info("[%s] Fetching page %d: %s", niche, page_num, page_url)
 
@@ -107,12 +125,34 @@ def parse_category(url: str, niche: str, pages: int = PAGES_PER_RUN) -> list[dic
                 try:
                     page_obj.goto(page_url, wait_until="domcontentloaded", timeout=30_000)
 
+                    if _cloudflare_gate_visible(page_obj):
+                        logger.warning(
+                            "[%s] Cloudflare challenge detected on page %d (attempt %d), waiting for clearance...",
+                            niche,
+                            page_num,
+                            attempt,
+                        )
+                        page_obj.wait_for_timeout(12_000)
+
                     # Scroll down gradually to trigger lazy-loaded product cards
                     for scroll_pos in [300, 600, 1000, 1500, 2500, 4000]:
                         page_obj.evaluate(f"window.scrollTo(0, {scroll_pos})")
                         page_obj.wait_for_timeout(400)
 
-                    page_obj.wait_for_selector('a[href*="/product/"]', timeout=20_000)
+                    try:
+                        page_obj.wait_for_selector('a[href*="/product/"]', timeout=20_000)
+                    except PlaywrightTimeoutError:
+                        if _cloudflare_gate_visible(page_obj):
+                            logger.warning(
+                                "[%s] Challenge still active on page %d (attempt %d), waiting a bit longer...",
+                                niche,
+                                page_num,
+                                attempt,
+                            )
+                            page_obj.wait_for_timeout(12_000)
+                            page_obj.wait_for_selector('a[href*="/product/"]', timeout=15_000)
+                        else:
+                            raise
                     loaded = True
                     break
 

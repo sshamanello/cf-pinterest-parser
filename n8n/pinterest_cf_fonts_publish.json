@@ -1,0 +1,468 @@
+{
+  "updatedAt": "2026-05-31T14:26:57.889Z",
+  "createdAt": "2026-05-31T07:58:38.500Z",
+  "id": "Fdw7jFhXN9Ovp0VM",
+  "name": "Pinterest CF Fonts Publish",
+  "description": "",
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## CF fonts: публикация\nБерёт первую строку fonts, где publish_status=ready, есть локальный обработанный файл в pin_path, vds_upload_status=uploaded и posted не TRUE. n8n читает локальный JPG, грузит один transient pin.jpg на VDS API, публикует pin и потом cleanup удаляет файл.",
+        "height": 220,
+        "width": 360
+      },
+      "id": "baa44431-c59b-4f96-8820-0292bf6f4316",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 5,
+              "triggerAtMinute": 15
+            }
+          ]
+        }
+      },
+      "id": "7f7d18aa-afa2-459d-bc6b-1331e32642d1",
+      "name": "Every 5 hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        464
+      ],
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT f.* FROM fonts f JOIN available_pin_paths app ON app.pin_path = f.pin_path WHERE f.publish_status = 'ready' AND upper(coalesce(f.posted, '')) <> 'TRUE' AND lower(coalesce(f.vds_upload_status, '')) = 'uploaded' AND coalesce(f.affiliate_url, '') <> '' AND coalesce(f.slug, '') <> '' AND coalesce(f.pin_path, '') <> '' ORDER BY f.id LIMIT 1;",
+        "options": {}
+      },
+      "id": "a54ff762-e742-45c8-be67-286f0b11144d",
+      "name": "Get ready rows",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        384
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PgLocalCred2026A1",
+          "name": "Postgres Pinterest Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const ready = items.filter((item) => {\n  const row = item.json;\n  const posted = String(row.posted ?? '').trim().toUpperCase();\n  const status = String(row.publish_status ?? '').trim().toLowerCase();\n  const upload = String(row.vds_upload_status ?? '').trim().toLowerCase();\n  return status === 'ready'\n    && posted !== 'TRUE'\n    && upload === 'uploaded'\n    && Boolean(row.pin_path)\n    && Boolean(row.affiliate_url)\n    && Boolean(row.slug);\n});\n\nreturn ready.slice(0, 1);\n"
+      },
+      "id": "451a8bc3-e843-4b80-939d-fe754a123321",
+      "name": "Pick one publishable row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        432,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "={{ \"/home/nick/cf-pinterest-parser/\" + $json.pin_path }}",
+        "options": {
+          "dataPropertyName": "data"
+        }
+      },
+      "id": "4914913e-97f9-4c32-bf25-c96d62650f15",
+      "name": "Read image file",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
+        624,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "binaryToJson",
+        "setAllData": false,
+        "sourceKey": "data",
+        "destinationKey": "image_base64",
+        "options": {
+          "keepAsBase64": true,
+          "keepSource": false
+        }
+      },
+      "id": "a7a0bf8a-3a19-4c34-8a68-8a8c9d0f1b11",
+      "name": "Convert image to base64",
+      "type": "n8n-nodes-base.moveBinaryData",
+      "typeVersion": 1.1,
+      "position": [
+        800,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.pinterest.com/v5/pins",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "pinInterestOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  board_id: \"905716243751342067\",\n  title: ((($('Pick one publishable row').item.json.title || $('Pick one publishable row').item.json.slug || \"Beautiful Font\") + \" Font for Cricut, Stickers & DIY Crafts\").toString().slice(0, 90)),\n  description: ((($('Pick one publishable row').item.json.hook_text ? $('Pick one publishable row').item.json.hook_text + \". \" : \"\") + \"Discover \" + ($('Pick one publishable row').item.json.title || $('Pick one publishable row').item.json.slug || \"this font\") + \" for Cricut projects, SVG designs, sublimation, printables, branding, invitations, stickers, logo design and creative business products. Save this pin for font inspiration and open the link to view the full preview and download page.\").slice(0, 500)),\n  link: $('Pick one publishable row').item.json.affiliate_url,\n  media_source: {\n    source_type: \"image_base64\",\n    content_type: \"image/jpeg\",\n    data: $json.image_base64\n  }\n}) }}",
+        "options": {}
+      },
+      "id": "359c740e-a4c2-4813-b909-c4b43d333d47",
+      "name": "Create Pinterest pin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        800,
+        384
+      ],
+      "credentials": {
+        "pinInterestOAuth2Api": {
+          "id": "F0pxjtQAV06pJuzo",
+          "name": "InkMint"
+        }
+      },
+      "continueOnFail": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "no_error",
+              "leftValue": "={{ $json.error?.message || $json.error || \"\" }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "73cf5266-75ce-4582-88a5-8a607bdee91a",
+      "name": "Pinterest success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        976,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE fonts SET posted='TRUE',     publish_status='published',     pin_id='{{ $json.id || $json.pin_id || $json.pinId || $json.data?.id || '' }}',     published_at='{{ $now }}',     error_reason='' WHERE slug='{{ $('Pick one publishable row').item.json.slug }}' RETURNING *;",
+        "options": {}
+      },
+      "id": "5561936f-0708-4b3b-b994-fd1d61a1d4e4",
+      "name": "Mark row published",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1264,
+        288
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PgLocalCred2026A1",
+          "name": "Postgres Pinterest Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE fonts SET posted='FALSE', publish_status='failed', error_reason='Pinterest request failed' WHERE slug='{{ $('Pick one publishable row').item.json.slug }}' RETURNING *;",
+        "options": {}
+      },
+      "id": "92924a0a-4b00-4a3f-9d91-c3b57e422f4f",
+      "name": "Mark row failed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1264,
+        480
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "PgLocalCred2026A1",
+          "name": "Postgres Pinterest Local"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Важно\nCleanup файла делает отдельный n8n workflow через VDS API. VDS хранит только один transient `pin.jpg`, который перезаписывается перед публикацией и удаляется после неё.",
+        "height": 180,
+        "width": 360
+      },
+      "id": "f854fe52-aefa-46b2-bf2a-2c0b534ca637",
+      "name": "Sticky Note 2",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1216,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "board"
+      },
+      "type": "n8n-nodes-pin-interest.pinInterest",
+      "typeVersion": 1,
+      "position": [
+        672,
+        48
+      ],
+      "id": "24e85c95-6dfd-42f8-b29a-17efe2dfdc07",
+      "name": "List boards",
+      "credentials": {
+        "pinInterestOAuth2Api": {
+          "id": "F0pxjtQAV06pJuzo",
+          "name": "InkMint"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg",
+          "mode": "list",
+          "cachedResultName": "CF Pinterest",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "fonts",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "publish_status",
+              "lookupValue": "ready"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "99ffa959-d802-4253-bc28-4ba5058f8b83",
+      "name": "Get ready rows1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        432,
+        48
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "Ofs0HJAih2ZMwneg",
+          "name": "Google Service Account account"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -16,
+        656
+      ],
+      "id": "7816c291-6927-40bd-b12e-4795a0cf6c78",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "path": "158810b6-1fef-4fd0-8268-619b62f43c58",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        256
+      ],
+      "id": "2bef4931-129c-4150-b000-bd1f76285b40",
+      "name": "Webhook",
+      "webhookId": "158810b6-1fef-4fd0-8268-619b62f43c58"
+    }
+  ],
+  "connections": {
+    "Every 5 hours": {
+      "main": [
+        [
+          {
+            "node": "Get ready rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get ready rows": {
+      "main": [
+        [
+          {
+            "node": "Pick one publishable row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick one publishable row": {
+      "main": [
+        [
+          {
+            "node": "Read image file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Pinterest pin": {
+      "main": [
+        [
+          {
+            "node": "Pinterest success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pinterest success?": {
+      "main": [
+        [
+          {
+            "node": "Mark row published",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark row failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Get ready rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Get ready rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read image file": {
+      "main": [
+        [
+          {
+            "node": "Convert image to base64",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert image to base64": {
+      "main": [
+        [
+          {
+            "node": "Create Pinterest pin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "staticData": {
+    "node:Every 5 hours": {
+      "recurrenceRules": [
+        6
+      ]
+    }
+  },
+  "meta": null,
+  "pinData": {},
+  "shared": [
+    {
+      "updatedAt": "2026-05-31T07:58:38.504Z",
+      "createdAt": "2026-05-31T07:58:38.504Z",
+      "role": "workflow:owner",
+      "workflowId": "Fdw7jFhXN9Ovp0VM",
+      "projectId": "oLEdFnH3iSD2KKVA",
+      "project": {
+        "updatedAt": "2026-05-30T11:25:02.986Z",
+        "createdAt": "2026-05-30T11:22:18.945Z",
+        "id": "oLEdFnH3iSD2KKVA",
+        "name": "Николай Гриненко <ngrinenko97@gmail.com>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "7928a656-2d03-4223-afe8-53ec52f6811d"
+      }
+    }
+  ],
+  "tags": []
+}

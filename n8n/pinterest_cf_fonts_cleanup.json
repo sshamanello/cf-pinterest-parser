@@ -1,0 +1,400 @@
+{
+  "name": "Pinterest CF Fonts Cleanup",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## CF fonts: cleanup published images\nРаз в час удаляет transient pin.jpg с VDS после достаточной задержки после publish. Файл хранится только один и не засоряет VDS.",
+        "height": 200,
+        "width": 360
+      },
+      "id": "4cfd4d1c-dfd0-423a-b483-d2ed0d20399c",
+      "name": "Sticky Note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -700,
+        -180
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1,
+              "triggerAtMinute": 45
+            }
+          ]
+        }
+      },
+      "id": "598bcedc-6801-4d6a-80d8-931194f921fa",
+      "name": "Every hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -700,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "documentId": {
+          "__rl": true,
+          "value": "1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg",
+          "mode": "list",
+          "cachedResultName": "CF Pinterest",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "fonts",
+          "mode": "name"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "publish_status",
+              "lookupValue": "published"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "c59d15c7-80a1-4e0c-ac36-c421648dad5c",
+      "name": "Get published rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        -460,
+        120
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "Ofs0HJAih2ZMwneg",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const MIN_AGE_MS = 30 * 60 * 1000;\nconst now = Date.now();\n\nconst rows = items.filter((item) => {\n  const row = item.json;\n  const cleanup = String(row.cleanup_status ?? '').trim().toLowerCase();\n  const status = String(row.publish_status ?? '').trim().toLowerCase();\n  const publishedAt = Date.parse(row.published_at || row.uploaded_at || '');\n  const oldEnough = Number.isNaN(publishedAt) || (now - publishedAt >= MIN_AGE_MS);\n\n  return status === 'published'\n    && cleanup !== 'deleted'\n    && Boolean(row.slug)\n    && oldEnough;\n});\n\nreturn rows.slice(0, 10);\n"
+      },
+      "id": "1bde73d4-19c9-498f-8506-790e9d617339",
+      "name": "Pick cleanup rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -220,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ 'https://YOUR_VDS_HOST/pins-api/upload?token=' + $env.PINS_API_TOKEN + '&name=pin.jpg' }}",
+        "options": {}
+      },
+      "id": "fcfc4396-4318-4d55-91bd-3ea6fb885cad",
+      "name": "Delete VDS file",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        40,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "cleanup_ok",
+              "leftValue": "={{ $json.ok ?? !$json.error }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "empty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "14e2d075-c0a5-4ee4-aecf-d3a772394b2d",
+      "name": "Cleanup success?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        280,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg",
+          "mode": "list",
+          "cachedResultName": "CF Pinterest",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "fonts",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "slug": "={{ $('Pick cleanup rows').item.json.slug }}",
+            "cleanup_status": "deleted",
+            "cleanup_at": "={{ $now }}",
+            "error_reason": ""
+          },
+          "matchingColumns": [
+            "slug"
+          ],
+          "schema": [
+            {
+              "id": "slug",
+              "displayName": "slug",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "cleanup_status",
+              "displayName": "cleanup_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "cleanup_at",
+              "displayName": "cleanup_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "error_reason",
+              "displayName": "error_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "95b9b7f7-c4d2-4a8d-ab40-8f23e3904b52",
+      "name": "Mark file deleted",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        560,
+        20
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "Ofs0HJAih2ZMwneg",
+          "name": "Google Service Account account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg",
+          "mode": "list",
+          "cachedResultName": "CF Pinterest",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "fonts",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "slug": "={{ $('Pick cleanup rows').item.json.slug }}",
+            "cleanup_status": "delete_failed",
+            "cleanup_at": "={{ $now }}",
+            "error_reason": "={{ $json.error?.message || $json.error || $json.stderr || \"cleanup failed\" }}"
+          },
+          "matchingColumns": [
+            "slug"
+          ],
+          "schema": [
+            {
+              "id": "slug",
+              "displayName": "slug",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "cleanup_status",
+              "displayName": "cleanup_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "cleanup_at",
+              "displayName": "cleanup_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "error_reason",
+              "displayName": "error_reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "6e6b6ba5-1439-4801-8b34-b8aafcca6a35",
+      "name": "Mark delete failed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        560,
+        220
+      ],
+      "credentials": {
+        "googleApi": {
+          "id": "Ofs0HJAih2ZMwneg",
+          "name": "Google Service Account account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every hour": {
+      "main": [
+        [
+          {
+            "node": "Get published rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get published rows": {
+      "main": [
+        [
+          {
+            "node": "Pick cleanup rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick cleanup rows": {
+      "main": [
+        [
+          {
+            "node": "Delete VDS file",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete VDS file": {
+      "main": [
+        [
+          {
+            "node": "Cleanup success?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cleanup success?": {
+      "main": [
+        [
+          {
+            "node": "Mark file deleted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark delete failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Moscow",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "active": false,
+  "versionId": "532a63a8-bd60-4c7d-b07d-1dc119247e81",
+  "id": "9c08719e-361c-41",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2b615a4ee9dcb4fb69a3233f53ddc1715da07a2d4a50e08b96754c796cdf17ea"
+  },
+  "tags": []
+}

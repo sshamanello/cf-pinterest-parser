@@ -1,0 +1,22 @@
+{
+  "items": [
+    {
+      "slug": "seed-maddison-4",
+      "title": "Seed Maddison 4",
+      "niche": "fonts",
+      "cf_url": "https://example.com/seed-maddison-4",
+      "affiliate_url": "https://example.com/seed-maddison-4?ref=test",
+      "image_url": "https://example.com/seed-maddison-4.jpg",
+      "local_image_path": "test/extractor/input/maddison-4.jpg"
+    },
+    {
+      "slug": "seed-magic-unicorn",
+      "title": "Seed Magic Unicorn",
+      "niche": "fonts",
+      "cf_url": "https://example.com/seed-magic-unicorn",
+      "affiliate_url": "https://example.com/seed-magic-unicorn?ref=test",
+      "image_url": "https://example.com/seed-magic-unicorn.jpg",
+      "local_image_path": "test/extractor/input/magic-unicorn.jpg"
+    }
+  ]
+}

@@ -1,10 +1,11 @@
 .env
 credentials.json
 output/
+logs/
 .git/
+.github/
 __pycache__/
 *.pyc
 *.pyo
-README.md
-CLAUDE.md
-.dockerignore
+.DS_Store
+test/extractor/output/

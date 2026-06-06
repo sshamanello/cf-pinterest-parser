@@ -2,6 +2,12 @@ requests==2.32.3
 beautifulsoup4==4.12.3
 playwright==1.49.1
 Pillow==10.3.0
+opencv-python==4.10.0.84
+rembg==2.0.61
+onnxruntime==1.24.4
+numpy==1.26.4
 gspread==6.1.2
 google-auth==2.30.0
 python-dotenv==1.0.1
+uiautomator2>=3.0.0
+openpyxl==3.1.5

@@ -1,0 +1,16 @@
+[Unit]
+Description=CF Pinterest phone automation scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nick
+WorkingDirectory=/home/nick/cf-pinterest-parser
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/nick/cf-pinterest-parser/.venv/bin/python /home/nick/cf-pinterest-parser/scheduler.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

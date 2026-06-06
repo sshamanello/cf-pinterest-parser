@@ -1,0 +1,1562 @@
+# CF Pinterest Parser — Быстрая инициализация проекта
+
+> Последнее обновление: 2026-06-06
+> Этот файл содержит полный контекст проекта для быстрого восстановления работы
+
+---
+
+## Правило ведения INIT.md
+
+- При любом изменении проекта (код, конфиги, запускные скрипты, инфраструктура, документация) обязательно обновлять `INIT.md` в этом же коммите.
+- В `INIT.md` фиксировать, что именно изменилось и почему это важно для дальнейшей работы.
+
+## Изменения 2026-06-06
+
+- Проект сейчас лучше всего читать как три точных контура:
+  - `download`:
+    - `parser.py`, `extractor.py`, `sheets.py`, `cf_pinterest/`
+    - задача: получить исходные данные и положить их в queue/db.
+  - `process`:
+    - `image_processor.py`, `comfy_processor.py`, `font_generator.py`, `font_publish_pipeline.py`, `prod_auto_pin_pipeline.py`
+    - задача: превратить сырой source в готовый `pin_01.jpg`.
+  - `publish`:
+    - `n8n/`, `pinterest_post.py`, `pinterest_warmup.py`, `run_phones.py`, `scheduler.py`, `deploy/`
+    - задача: отправить готовый asset в Pinterest и зафиксировать статус.
+- Актуальная схема публикации `CF Fonts` теперь не требует `public_image_url`:
+  - live workflow `Pinterest CF Fonts Publish` читает локальный обработанный JPG из `pin_path`,
+  - затем переводит binary в `image_base64`,
+  - и отправляет это в Pinterest API.
+- Это важно для восстановления проекта:
+  - `public_image_url` остаётся в данных очереди и legacy batch-экспортах,
+  - но больше не является обязательным контрактом для live CF fonts publish workflow.
+- На сервере `YOUR_SERVER_IP` активен host-level `n8n`, а не docker-контур:
+  - publish workflow импортирован и опубликован как `Pinterest CF Fonts Publish`,
+  - cleanup workflow остаётся отдельным.
+- Для отладки публикации добавлены структурированные события:
+  - `data/logs/events.log` теперь содержит start/resolve/success/fail events по publish job,
+  - это основной журнал для проверки, когда именно началась публикация и чем она закончилась.
+- Старые заметки про VDS/public_image_url ниже в файле оставлены как исторический контекст, но не описывают текущий live CF-fonts flow.
+
+## Изменения 2026-04-15
+
+## Изменения 2026-04-18
+
+## Изменения 2026-04-19
+
+## Изменения 2026-04-21
+
+## Изменения 2026-05-01
+
+## Изменения 2026-05-17
+
+## Изменения 2026-05-20
+
+## Изменения 2026-05-27
+
+## Изменения 2026-05-31
+
+- Проверено фактическое состояние сервера `YOUR_SERVER_IP`:
+  - `cf-pinterest-media.service` работает (`active`),
+  - `cf-pinterest-scheduler.service` был `inactive`,
+  - `n8n` контейнер отсутствовал в `docker-compose`, поэтому не запускался.
+- Для приведения к целевому pipeline добавлен `n8n` сервис в `docker-compose.yml`:
+  - профиль `n8n`,
+  - публикация `${N8N_PORT}:5678` (default `5680`),
+  - volume `./n8n_data` для состояния n8n,
+  - read-only mount `./n8n:/workflows` для import workflow из репозитория,
+  - базовые переменные `N8N_*` и basic auth.
+- Обновлён `.env.example`:
+  - добавлены `N8N_PORT`, `N8N_HOST`, `N8N_PROTOCOL`, `N8N_WEBHOOK_URL`,
+  - добавлены `N8N_BASIC_AUTH_*`.
+- Добавлен deploy-скрипт `deploy/import_n8n_workflows.sh`:
+  - поднимает `n8n`,
+  - импортирует `n8n/pinterest_cf_fonts_publish.json`,
+  - импортирует `n8n/pinterest_cf_fonts_cleanup.json`.
+- Workflow `n8n/pinterest_cf_fonts_publish.json` обновлён из актуального файла `Pinterest CF Fonts Publish.json` (board/описания/доп. webhook node).
+- Верификация на `n8n 1.95.3` показала, что community node `n8n-nodes-pin-interest.pinInterest` не активируется (`Unrecognized node type`).
+- Для стабильного server-side запуска publish workflow переведён на стандартный `HTTP Request` к `https://api.pinterest.com/v5/pins`:
+  - без зависимости от кастомных нод,
+  - авторизация через env `PINTEREST_ACCESS_TOKEN`,
+  - target board через env `PINTEREST_BOARD_ID`.
+- На сервере `YOUR_SERVER_IP` в контейнерный `n8n` импортирован `googleApi` credential с id `Ofs0HJAih2ZMwneg`, чтобы workflow мог читать/обновлять Google Sheet (`fonts`).
+- Workflow `Pinterest CF Fonts Publish` и `Pinterest CF Fonts Cleanup` сейчас стартуют как `Started` после рестарта `n8n`.
+- Фактический текущий блокер публикации в Pinterest:
+  - при webhook/trigger execution Pinterest API отвечает `401 Authentication failed`,
+  - значит требуется рабочий `PINTEREST_ACCESS_TOKEN` (и корректный `PINTEREST_BOARD_ID`) в серверном `.env`.
+- Проверка генерации/публикации изображений подтверждена:
+  - `run.py prod-auto-pin --products-file ./test/products_seed.json --limit 1 --upload-vds --sync-sheet` успешно отработал на сервере,
+  - pin сгенерирован, загружен в `published/pins/ready`, строка синхронизирована в Google Sheet.
+- `README.md` синхронизирован с реальным серверным runbook:
+  - деплой через `rsync` на `YOUR_SERVER_IP`,
+  - запуск `docker compose --profile n8n up -d n8n`,
+  - импорт workflow через `deploy/import_n8n_workflows.sh`,
+  - добавлены проверки `systemctl`, `docker compose ps`, `curl` и целевая цепочка `batch -> media -> n8n -> Pinterest`.
+- На сервере обнаружен уже запущенный host-level `n8n` (`/root/.hermes/node/bin/n8n`) на порту `5678`, поэтому docker `n8n` для проекта переведён на `5680` по умолчанию.
+
+- Восстановлена рабочая git-основа проекта в `/home/nick/cf-pinterest-parser`:
+  - исходная рабочая директория оказалась неполной и без `.git`,
+  - история и недостающие файлы были подняты из резервной копии `/home/nick/Copy of cf-pinterest-parser`,
+  - локальные `output/`, `logs/` и серверный `.env` сохранены как есть.
+- Для срочного перевода n8n с внешнего VDS на текущий сервер создана отдельная ветка:
+  - `fix/local-image-server`
+- Основная продуктовая цель текущего прохода:
+  - не зависеть от `YOUR_VDS_IP` для `public_image_url`,
+  - публиковать JPG прямо с этой машины `YOUR_SERVER_IP`,
+  - сохранить совместимость с текущими Google Sheet / n8n полями без переделки всей очереди.
+- Что изменено в коде:
+  - `prod_auto_pin_pipeline.py` теперь поддерживает два backend-а публикации изображений:
+    - `vds` — старая схема через `scp/ssh`,
+    - `local` — новая схема через локальное копирование в каталог сервера.
+  - выбор backend-а управляется так:
+    - если `CF_IMAGE_BACKEND=local`, используется локальная публикация,
+    - если backend не задан, но заполнены `CF_LOCAL_*`, локальная схема тоже выбирается автоматически,
+    - если локальная схема не настроена, остаётся совместимый fallback на `VDS_*`.
+  - при локальной публикации:
+    - `pin_01.jpg` копируется в `published/pins/ready/`,
+    - в отчёт и в Sheet пишутся:
+      - `public_image_url`
+      - `remote_image_path`
+      - `vds_upload_status=uploaded` (поле сохранено ради совместимости текущего workflow)
+      - `upload_backend=local`
+  - текущий рекомендуемый URL-базис для этой машины:
+    - `CF_LOCAL_PUBLIC_BASE_URL=http://YOUR_SERVER_IP:8088/pins/ready`
+- Что изменено для n8n/очереди:
+  - `cf_pinterest/queue_service.py` теперь при sync в локальную SQLite queue предпочитает:
+    - `public_image_url`,
+    - затем `pin_jpg`,
+    - и только потом исходный `image_url`,
+  - `cf_pinterest/db.py` при rebuild publish-очереди использует уже publish-ready URL/путь, а не только локальный `pin_jpg`,
+  - это важно для `export-n8n-queue` и `prepare-n8n-export`, чтобы в n8n не уезжал старый preview URL Creative Fabrica вместо готового publish asset.
+- Что изменено в Sheet / cleanup:
+  - `sheets.py` добавляет колонку `upload_backend`,
+  - workflow `n8n/pinterest_cf_fonts_cleanup.json` теперь умеет чистить:
+    - новый локальный путь `/home/nick/cf-pinterest-parser/published/pins/ready/`,
+    - старые VDS пути `/var/www/html/pins/ready/` и `/var/www/pins/ready/`.
+- Что добавлено по инфраструктуре текущего сервера:
+  - `deploy/cf-pinterest-media.service`
+    - systemd unit для HTTP-раздачи каталога `published/` на порту `8088`,
+  - `deploy/bootstrap_phone_server.sh`
+    - теперь создаёт `published/pins/ready`,
+    - устанавливает и включает не только `cf-pinterest-scheduler.service`, но и `cf-pinterest-media.service`,
+  - `Makefile`:
+    - добавлен `make media-serve` для быстрого ручного старта локальной раздачи без systemd.
+- Новые/важные env-переменные:
+  - `CF_IMAGE_BACKEND=local`
+  - `CF_LOCAL_PUBLISH_DIR=published/pins/ready`
+  - `CF_LOCAL_PUBLIC_BASE_URL=http://YOUR_SERVER_IP:8088/pins/ready`
+- Практический operational смысл:
+  - если старая VDS раздача недоступна или ломает загрузку картинок в n8n, новый batch может публиковать файлы сразу на этой машине;
+  - n8n продолжает работать через `public_image_url`, но источник URL теперь локально контролируется текущим сервером.
+- Живая проверка на этой машине выполнена:
+  - `cf-pinterest-media.service` установлен и запущен через systemd,
+  - `run.py upload-vds --report output/server_smoke_20260520_final/_reports/auto_pin_batch_report.json` отработал уже в режиме `backend=local`,
+  - опубликован файл:
+    - `published/pins/ready/ladybug-51-9eb04db6c3.jpg`
+  - записанный URL:
+    - `http://YOUR_SERVER_IP:8088/pins/ready/ladybug-51-9eb04db6c3.jpg`
+  - проверка `curl -I` на этот URL вернула `HTTP/1.0 200 OK`.
+- Для массовой миграции старой очереди добавлена пакетная CLI-команда:
+  - `python run.py upload-vds-batch --reports-glob 'output/**/_reports/auto_pin_batch_report.json' --sync-sheet --tab fonts`
+  - смысл команды:
+    - один `Spreadsheet` client,
+    - один `ensure_tabs(...)`,
+    - дальше цикл по отчётам без лишнего повторного bootstrap на каждый файл,
+    - это снижает риск `429 quota exceeded` при массовом переписывании старых `public_image_url`.
+- Фактически выполненная миграция `2026-05-27`:
+  - крупные batch-отчёты `docker_prod`, `docker_prod_bootstrap_20260521`, `docker_prod_manual_20260521_p11` уже переписаны на локальный host и синхронизированы в Google Sheet;
+  - затем через `upload-vds-batch` добиты `server_*` отчёты;
+  - суммарно локальная раздача получила больше `100` publish-ready JPG;
+  - Google Sheet `fonts` массово обновлён на `public_image_url` вида:
+    - `http://YOUR_SERVER_IP:8088/pins/ready/<slug>-<hash>.jpg`
+- Локальная SQLite queue тоже приведена в актуальное состояние:
+  - все найденные `auto_pin_batch_report.json` заново синхронизированы через `sync-queue-db`,
+  - `export-n8n-queue --destination local --format json` теперь отдаёт записи с локальными `image_url` на `YOUR_SERVER_IP:8088`,
+  - это подтверждает, что локальный queue/export слой больше не завязан на старый `YOUR_VDS_IP`.
+- Риски/ограничения, которые важно помнить:
+  - URL из `CF_LOCAL_PUBLIC_BASE_URL` должен быть достижим для того, кто реально забирает картинку:
+    - как минимум для самого n8n,
+    - а если Pinterest node требует внешне доступный URL, то и для внешнего интернета/публичного маршрута тоже.
+  - То есть перенос на текущий сервер убирает зависимость от старого VDS, но не отменяет сетевую необходимость доступности URL.
+
+## Изменения 2026-05-21
+
+- Проверка спустя сутки на сервере `YOUR_SERVER_IP` показала:
+  - реальные скачивания и обработки были только в ручных/тестовых прогонах `2026-05-20`,
+  - автоматический batch-контур на генерацию новых шрифтов сам по себе ещё не был поднят.
+- Найдена продуктовая проблема старой логики `prod-auto-pin`:
+  - повторные запуски брали просто первые `N` товаров из свежего парсинга,
+  - из-за этого сервер мог бы перерабатывать одни и те же `slug`, а не действительно новые шрифты.
+- Исправление:
+  - в `prod_auto_pin_pipeline.py` добавлен фильтр по уже существующим `slug` из Google Sheet,
+  - перед выборкой batch-а пайплайн теперь:
+    - подключается к таблице,
+    - читает существующие `slug` из нужного tab-а,
+    - пропускает уже обработанные позиции,
+    - выбирает только новые товары до заданного `limit`.
+  - поведение управляется env-переменной:
+    - `CF_SKIP_EXISTING_SHEET=true` по умолчанию.
+- Обновлена batch-логика Docker cron для фонового сервиса `cf-batch-cron`:
+  - новый дефолтный cron:
+    - `15 */4 * * *`
+    - то есть каждые 4 часа в `00:15`, `04:15`, `08:15`, `12:15`, `16:15`, `20:15`
+  - новый дефолтный batch command:
+    - `python run.py prod-auto-pin --niche fonts --pages 10 --limit 10 --output output/docker_prod --upload-vds --sync-sheet`
+  - итоговая целевая производительность:
+    - `6` запусков в день
+    - по `10` новых шрифтов за запуск
+    - минимум `60` новых шрифтов в сутки при наличии новых позиций в первых `10` страницах выдачи.
+- Исправлена ещё одна продуктовая проблема генератора batch-ов:
+  - даже после фильтра по новым `slug` пайплайн всё равно всегда смотрел только страницы `1-10`,
+  - это означало, что при насыщении верхушки каталога новые шрифты глубже выдачи не попадали в работу.
+- Новая логика окна страниц:
+  - `parser.parse_category(...)` теперь умеет принимать `start_page`,
+  - `prod_auto_pin_pipeline.py` ведёт персистентный курсор страниц в файле:
+    - `output/_state/page_cursor.json`
+  - каждый запуск берёт текущее окно:
+    - сначала `1-10`,
+    - потом `11-20`,
+    - потом `21-30`
+    - и так далее до `CF_PAGE_CURSOR_MAX`,
+  - после успешного прогона курсор автоматически двигается дальше,
+  - при рестарте контейнера курсор не теряется, потому что state хранится в volume `./output`.
+- Новые env-переменные для server/Docker режима:
+  - `CF_PAGE_CURSOR_FILE=output/_state/page_cursor.json`
+  - `CF_PAGE_CURSOR_MAX=100`
+- Важная деталь отказоустойчивости:
+  - курсор двигается только после успешного завершения `prod-auto-pin`,
+  - если прогон упал посередине, окно страниц не теряется и будет повторно обработано на следующем запуске.
+- Для текущей production-идеи это важный operational принцип:
+  - cron-контур теперь должен не “гонять тестовый один шрифт”, а стабильно накапливать новые позиции в Sheet/VDS без дублей и без зацикливания на первых страницах каталога.
+
+- Начата полноценная Docker-проверка уже на новом сервере `YOUR_SERVER_IP`:
+  - проект загружен в `/home/nick/cf-pinterest-parser`,
+  - на сервер установлен `docker-compose` (package `docker-compose`, version `2.26.1-4`),
+  - `docker-compose config` проходит успешно.
+- Во время первой server-side сборки на новом сервере был transient сбой доступа Docker к Docker Hub:
+  - `docker-compose build` упал на `failed to fetch anonymous token` для `python:3.11-slim`,
+  - прямой `curl` до `auth.docker.io` и `registry-1.docker.io` с сервера отвечал нормально,
+  - повторный `docker pull python:3.11-slim` прошёл успешно,
+  - после этого `docker-compose build cf-runner` продолжился штатно.
+- Найден и исправлен реальный runtime-дефект контейнера:
+  - `docker-compose run --rm cf-runner run python test_components.py` падал на
+    `ImportError: libGL.so.1: cannot open shared object file`,
+  - причина: для `opencv-python` в образе не хватало системной библиотеки `libgl1`.
+- Исправление:
+  - в `Dockerfile` в apt-зависимости добавлен `libgl1`,
+  - это обязательный пакет для smoke/production запуска `opencv` внутри Docker на Linux.
+- Во время live e2e-прогона на новом сервере найден ещё один infrastructure-узкий момент:
+  - VDS upload внутри контейнера сначала не работал из-за серверного `.env`:
+    - `VDS_SSH_HOST` был задан как локальный alias `cf-pinterest-vds`,
+    - `VDS_SSH_PASSWORD` на новом сервере был пустым.
+  - после перевода `VDS_SSH_HOST` на реальный IP `YOUR_VDS_IP` и заполнения пароля выяснилось,
+    что ветка `expect` внутри контейнера остаётся менее надёжной, чем `sshpass`.
+- Исправление для контейнера:
+  - в `Dockerfile` добавлен `sshpass`,
+  - upload-код в `prod_auto_pin_pipeline.py` уже умеет автоматически предпочитать `sshpass`,
+  - это делает VDS upload стабильнее и избавляет от fragile `expect`-обвязки в production-контейнере.
+- Во время финального e2e-прогона подтвердился ещё один сетевой риск:
+  - после успешного VDS upload Google Sheets иногда рвёт соединение на `open_by_key` / `row_values` /
+    `get_all_values` с ошибками уровня `RemoteDisconnected`, `ConnectionResetError`, `SSLEOFError`.
+- Исправление:
+  - в `sheets.py` добавлена retry-обвязка `_call_with_retry(...)`,
+  - ретраи управляются env-переменными:
+    - `CF_SHEETS_RETRY_ATTEMPTS` (default `4`)
+    - `CF_SHEETS_RETRY_DELAY` (default `2`)
+  - под retry заведены основные сетевые вызовы `gspread`:
+    - `open_by_key`
+    - `worksheets`
+    - `worksheet`
+    - `row_values`
+    - `col_values`
+    - `get_all_values`
+    - `append_row(s)`
+    - `batch_update`
+    - `update`
+    - `update_cell`
+  - цель: контейнер не должен падать от единичного сетевого сброса при sync в Google Sheet.
+- Важный operational вывод:
+  - Docker-пайплайн теперь нужно валидировать именно на сервере, а не на Mac,
+  - потому что сетевые и системные различия (`docker hub auth`, Linux shared libs) проявляются только в реальном Linux-окружении.
+
+- Проект приведён в более production-ready состояние перед подготовкой к GitHub:
+  - добавлен общий модуль логирования `logging_utils.py`,
+  - основные CLI-entrypoint'ы теперь пишут и в stdout, и в ротационные логи:
+    - `logs/run.log`
+    - `logs/main.log`
+    - `logs/phones.log`
+    - `logs/scheduler.log`
+    - `logs/test_components.log`
+  - логирование управляется env-переменными:
+    - `CF_LOG_LEVEL`
+    - `CF_LOG_DIR`
+    - `CF_LOG_MAX_BYTES`
+    - `CF_LOG_BACKUP_COUNT`
+- Обновлён `test_components.py` под реальную архитектуру 2026 года:
+  - проверяет env,
+  - credentials,
+  - Google Sheets,
+  - Playwright,
+  - live parser attempt,
+  - auto-pin smoke на локальном sample,
+  - `scheduler.py --dry-run`,
+  - optional `adb` visibility.
+- Улучшен `parser.py`:
+  - добавлена явная детекция Cloudflare challenge (`Just a moment...`, `checking your browser`, `verify you are human`),
+  - перед окончательным fail делается более длинное ожидание clearance,
+  - в логах теперь понятно, что это именно Cloudflare-блок, а не немой timeout.
+- Улучшено operational logging в runtime-модулях:
+  - `prod_auto_pin_pipeline.py` теперь подробнее логирует скачивание preview, VDS upload и общий summary batch-а,
+  - `phone_manager.py` логирует найденные ADB-устройства и cache-hit локальных изображений,
+  - `pinterest_post.py` логирует ключевые этапы Android flow:
+    - выбор ready pin из Sheet,
+    - открытие Pinterest,
+    - переход в gallery,
+    - выбор альбома,
+    - push файла,
+    - выбор board,
+    - cleanup файла на телефоне.
+- Полностью обновлена Docker-обвязка под текущую архитектуру:
+  - `Dockerfile` больше не завязан только на `main.py`,
+  - `docker-entrypoint.sh` поддерживает режимы:
+    - `run`
+    - `cron`
+    - `scheduler`
+    - `shell`
+  - `docker-compose.yml` теперь моделирует реальные роли:
+    - `cf-runner`
+    - `cf-batch-cron`
+    - `cf-phone-scheduler`
+  - в образ добавлены необходимые пакеты для текущего продового сценария:
+    - `adb`
+    - `cron`
+    - `openssh-client`
+    - `expect`
+    - Playwright Chromium.
+- Добавлены deployment-артефакты в `deploy/`:
+  - `deploy/cf-pinterest-scheduler.service`
+  - `deploy/99-android-xiaomi.rules`
+  - `deploy/bootstrap_phone_server.sh`
+- Обновлены документационные файлы под фактический pipeline:
+  - `README.md`
+  - `DOCKER.md`
+  - `DOCKER_QUICKSTART.md`
+  - `DOCKER_REPORT.md`
+  - `TEST_REPORT.md`
+  - `CLAUDE.md`
+- Состояние smoke-проверок на локальной машине после refresh-прохода:
+  - `PASS`:
+    - env
+    - credentials
+    - Google Sheets
+    - Playwright Chromium launch
+    - auto-pin sample
+    - scheduler dry-run
+  - `WARN`:
+    - на этом Mac сейчас нет локального `adb`, поэтому phone checks локально не выполнялись
+  - `FAIL`:
+    - live parser для Creative Fabrica на этом workstation упирается в Cloudflare challenge (`Just a moment...`)
+    - это честно зафиксировано как текущий внешний риск production-пайплайна.
+- Новая серверная точка для phone automation:
+  - актуальный хост: `YOUR_PHONE_SERVER_IP`
+  - состояние на момент последней проверки:
+    - `cf-pinterest-scheduler.service` запущен и `active (running)`,
+    - `scheduler.log` пишется,
+    - `adb devices -l` в момент проверки не показал подключённого устройства.
+- Важно:
+  - старый серверный контекст больше не считать актуальным для текущего развёртывания,
+  - для новой машины нужна отдельная живая проверка с реально подключённым телефоном:
+    - `adb devices -l`
+    - `python run_phones.py warmup`
+    - `python run_phones.py post --tab fonts`
+- Docker-файлы и документация подготовлены, но в этой рабочей среде не было локального `docker` CLI,
+  поэтому полный `docker compose build/run` в рамках текущего прохода не выполнялся.
+- Во время реальной Docker-проверки на сервере `YOUR_PHONE_SERVER_IP` найден конфликт в `requirements.txt`:
+  - `droidrun==0.4.26` требовал `python-dotenv>=1.2.1`,
+  - проект был pinned на `python-dotenv==1.0.1`,
+  - при этом `droidrun` кодом не используется.
+- Исправление:
+  - `droidrun` удалён из `requirements.txt`,
+  - phone automation остаётся на `uiautomator2`,
+  - это выравнивает зависимости с реальным кодом и позволяет собирать Docker-образ без лишнего неиспользуемого слоя.
+- Во время серверной Docker-проверки найден ещё один build-blocker:
+  - `playwright install-deps chromium` внутри контейнера уходил в fallback для неподдерживаемой Ubuntu-ветки,
+  - на Debian `trixie` это приводило к зависанию/ошибкам на системном `apt`-шаге внутри Playwright.
+- Исправление:
+  - из `Dockerfile` убран `playwright install-deps chromium`,
+  - остаётся только `playwright install chromium`,
+  - системные Linux-библиотеки для Chromium продолжают ставиться нашим явным `apt-get` шагом выше,
+  - это делает build на сервере детерминированнее и убирает лишний “второй пакетный менеджер” внутри образа.
+
+- Поднят первый Linux-сервер для `feature/android-phone-automation`:
+  - проект развёрнут в `/home/nick/cf-pinterest-parser`,
+  - используется `python3.11` + `.venv`,
+  - установлены server-side зависимости для phone automation:
+    - `adb`
+    - `python3-venv`
+    - `python-dotenv`
+    - `requests`
+    - `gspread`
+    - `google-auth`
+    - `uiautomator2`
+- Для автономного запуска scheduler настроен `systemd`-сервис:
+  - unit: `cf-pinterest-scheduler.service`
+  - `ExecStart=/home/nick/cf-pinterest-parser/.venv/bin/python /home/nick/cf-pinterest-parser/scheduler.py`
+  - сервис включён в автозапуск (`enabled`) и находится в `active (running)`.
+- Для Android USB на Debian добавлено постоянное `udev`-правило под Xiaomi/Redmi:
+  - файл: `/etc/udev/rules.d/99-android-xiaomi.rules`
+  - vendor id: `2717`
+  - причина: устройство сначала определялось как `no permissions`, после правки перешло в нормальный ADB state.
+- Текущий серверный статус телефона:
+  - `adb devices -l` показывает `Redmi_Go` в состоянии `device`,
+  - перед этим потребовалось вручную подтвердить RSA/USB debugging на экране телефона.
+- Логи scheduler на сервере:
+  - `/home/nick/cf-pinterest-parser/logs/scheduler.log`
+- Что проверено на сервере:
+  - `scheduler.py --dry-run` считает ближайший слот,
+  - `scheduler.py --run-now --force-no-phone` корректно пишет skip без падения,
+  - `adb devices -l` видит телефон,
+  - живой `run_phones.py warmup` стартует на устройстве.
+- Важно:
+  - полный `post --tab fonts` на сервере отдельно не запускался в тестовом режиме, чтобы не публиковать реальный pin без необходимости,
+  - для ручной проверки можно запускать уже на сервере из проекта:
+    - `.venv/bin/python run_phones.py warmup`
+    - `.venv/bin/python run_phones.py post --tab fonts`
+    - `sudo systemctl status cf-pinterest-scheduler.service`
+    - `tail -f /home/nick/cf-pinterest-parser/logs/scheduler.log`
+
+- Улучшен `pinterest_warmup.py` в ветке `feature/android-phone-automation`:
+  - вместо равномерных пауз `uniform()` используется gaussian-модель с отсечением по `min/max`,
+  - добавлено поведение "открыть пин и почитать":
+    - обычный тап по карточке,
+    - пауза `3-8s`,
+    - внутренний скролл пина,
+    - иногда небольшой обратный скролл,
+    - возврат назад,
+  - добавлен "промах" (`~15%`):
+    - случайный тап не туда,
+    - короткая пауза,
+    - `back`,
+  - добавлена переменная скорость просмотра:
+    - `fast` burst (несколько быстрых экранов подряд),
+    - `normal`,
+    - `slow` с более длинными паузами,
+  - добавлен одноразовый `follow` на сессию:
+    - включается примерно в `13%` прогревов,
+    - выполняется только из открытого пина,
+    - после успешного follow повторно в этой же сессии не делается.
+  - добавлена гарантированная длина warmup-сессии:
+    - целевая длительность теперь примерно `90-180s`,
+    - если базовый сценарий закончился слишком быстро, сессия автоматически добирается дополнительным browsing на home feed.
+  - усилен сам объём прогрева:
+    - у `scroll+save` больше базовых проходов по ленте,
+    - у `search` больше шагов просмотра результатов,
+    - у `notifications` больше browsing-итераций,
+    - досрочный выход из добора времени убран, поэтому warmup реально доживает до целевого интервала.
+  - в конце warmup Pinterest больше не `app_stop()`:
+    - вместо принудительного закрытия выполняется мягкий выход на `home`,
+    - визуально это больше похоже на поведение человека и не создаёт эффект "зашёл и сразу вылетел".
+  - после живого теста на устройстве исправлен fallback поиска:
+    - селекторы `hint/hintText` убраны,
+    - используется безопасный поиск поля через `resourceId` и `android.widget.EditText`,
+    - это устраняет ошибку `hint is not allowed` на текущем `uiautomator2`.
+- Добавлен автономный планировщик `scheduler.py` для phone automation:
+  - скрипт запускается один раз и сам ждёт ежедневные слоты,
+  - 5 слотов в день:
+    - `09:00 ± 15m`
+    - `12:00 ± 15m`
+    - `15:00 ± 15m`
+    - `18:00 ± 15m`
+    - `21:00 ± 15m`
+  - jitter пересчитывается заново каждый день,
+  - на каждый слот идёт цепочка:
+    - `python run_phones.py warmup`
+    - пауза `5-15` минут
+    - `python run_phones.py post --tab fonts`
+  - если `adb devices` пустой:
+    - слот пропускается,
+    - в `logs/scheduler.log` пишется warning,
+    - процесс не падает и ждёт следующий слот.
+- Для локальной проверки scheduler добавлены безопасные режимы:
+  - `python scheduler.py --dry-run` — показать ближайший слот и выйти,
+  - `python scheduler.py --run-now --force-no-phone` — симулировать слот без телефона и проверить skip-ветку.
+- Серверный запуск scheduler:
+  - `mkdir -p logs`
+  - `nohup python scheduler.py >> logs/scheduler.log 2>&1 &`
+- Существующие 3 сценария прогрева не удалялись и не меняли веса:
+  - `scroll+save` — `60%`
+  - `search` — `25%`
+  - `notifications` — `15%`
+- Важно:
+  - логика реализована только на `uiautomator2`,
+  - без LLM и без DroidRun,
+  - сохранены текущие селекторы `lego_pin_grid_cell_id` и `board_section_picker_board_cell`,
+  - follow реализован через безопасный набор candidate-selector'ов и fallback по тексту `Подписаться/Follow`.
+
+- Добавлены импортируемые n8n workflow для публикации fonts-пинов с VDS:
+  - `n8n/pinterest_cf_fonts_publish.json`
+  - `n8n/pinterest_cf_fonts_cleanup.json`
+- `Pinterest CF Fonts Publish`:
+  - запускается раз в 5 часов,
+  - читает очередь PostgreSQL для `fonts`,
+  - берёт первую строку с `publish_status=ready`, `vds_upload_status=uploaded`, `posted != TRUE`, заполненными `public_image_url`, `affiliate_url`, `slug`,
+  - создаёт Pinterest pin через уже существующий Pinterest credential/board из старого workflow,
+  - картинку берёт из `public_image_url` обработанного и уже опубликованного локального файла,
+  - ссылку клика ставит на `affiliate_url`,
+  - заголовок pin берётся из `hook_text`; если hook пустой, fallback: `<title> for Cricut & Crafts`,
+  - описание pin расширено SEO-текстом про Cricut, SVG, sublimation, printables, branding, invitations, stickers и download page,
+  - после успеха обновляет строку по `slug`: `posted=TRUE`, `publish_status=published`, `pin_id`, `published_at`,
+  - после ошибки обновляет строку по `slug`: `posted=FALSE`, `publish_status=failed`, `error_reason`.
+- `Pinterest CF Fonts Cleanup`:
+  - запускается раз в час,
+  - берёт опубликованные строки,
+  - ждёт минимум 30 минут после `published_at`,
+  - удаляет файл только если `remote_image_path` начинается с `/var/www/html/pins/ready/`,
+  - после удаления ставит `cleanup_status=deleted`, `cleanup_at`,
+  - при ошибке ставит `cleanup_status=delete_failed`.
+- Важно по архитектуре n8n:
+  - публикация и удаление файлов разделены специально, чтобы Pinterest успевал скачать JPG с VDS,
+  - старый `/Users/nick/Downloads/Pinterest.json` не перезаписывался, новые workflow лежат отдельно в проекте.
+
+- Подготовлен VDS upload слой для автономной публикации через n8n:
+  - `prod-auto-pin` получил флаг:
+    - `--upload-vds`
+  - добавлена отдельная команда для уже готового отчёта:
+    - `python3 run.py upload-vds --report ./output/prod/fonts/_reports/auto_pin_batch_report.json --sync-sheet`
+  - загружается только `pin_01.jpg`, без `.png`, исходников и meta, чтобы экономить диск VDS.
+- VDS upload использует env-переменные:
+  - `VDS_SSH_HOST`
+  - `VDS_SSH_USER`
+  - `VDS_SSH_PORT` (default `22`)
+  - `VDS_SSH_PASSWORD` (optional; требует `sshpass`, если используется пароль)
+  - `VDS_REMOTE_DIR` (default `/var/www/pins/ready`)
+  - `VDS_PUBLIC_BASE_URL` (например `https://domain.com/pins/ready`)
+  - шаблон добавлен в `.env.example`.
+- Для password-based SSH/SCP на Mac добавлена поддержка системного `expect`:
+  - если `sshpass` установлен, используется `sshpass`,
+  - если `sshpass` отсутствует, используется `/usr/bin/expect`,
+  - это важно для текущего Mac, где `sshpass` не установлен.
+- Так как домена для VDS пока нет, для текущей загрузки используем public base через IP:
+  - `http://YOUR_VDS_IP/pins/ready`
+- После upload в `auto_pin_batch_report.json` пишутся:
+  - `public_image_url`
+  - `remote_image_path`
+  - `vds_upload_status`
+  - `uploaded_at`
+  - `cleanup_status`
+  - `upload_error` при ошибке.
+- Google Sheets sync расширен новыми колонками:
+  - `public_image_url`
+  - `remote_image_path`
+  - `vds_upload_status`
+  - `uploaded_at`
+  - `cleanup_status`
+  - `cleanup_at`
+  - если upload был запрошен, но не удался, `publish_status` становится `upload_failed`.
+- После загрузки пачки 100 на VDS Google Sheets sync упёрся в лимит read requests:
+  - причина: старая реализация читала каждую строку отдельно через `row_values`,
+  - исправлено: `upsert_auto_pin_report` делает один bulk-read `get_all_values`, потом `batch_update` и `append_rows`.
+- Финальный результат пачки 100 без повторного парсинга:
+  - локально обработано `100` файлов из `output/prod/fonts_100/_input`,
+  - `generated=94`,
+  - `rejected=6`,
+  - на VDS загружено `94` JPG,
+  - публичная проверка URL дала `HTTP/1.1 200 OK`,
+  - на VDS в `/var/www/html/pins/ready` сейчас `101` JPG / примерно `40 MB`,
+  - Google Sheet sync после batch-read фикса: `inserted=16`, `updated=84`.
+- План хранения на VDS с текущим диском `8.4 / 10 GB`:
+  - держать только JPG,
+  - стартовать с очереди до `100` файлов,
+  - n8n публикует по `public_image_url`,
+  - cleanup удаляет или переносит опубликованные файлы после задержки.
+
+- Выполнен первый успешный продовый прогон `prod-auto-pin` на fonts:
+  - команда:
+    - `python3 run.py prod-auto-pin --niche fonts --limit 20 --output ./output/prod/fonts --sync-sheet`
+  - перед запуском локально установлен Chromium для Playwright:
+    - `python3 -m playwright install chromium`
+  - результат:
+    - `parsed=84`
+    - `selected=20`
+    - `downloaded=20`
+    - `generated=20`
+    - `rejected=0`
+  - Google Sheet sync:
+    - `inserted=1`
+    - `updated=19`
+- Продовые артефакты лежат в:
+  - `output/prod/fonts/_input` — скачанные preview,
+  - `output/prod/fonts/<slug>/auto_pin/pin_01.png`,
+  - `output/prod/fonts/<slug>/auto_pin/pin_01.jpg`,
+  - `output/prod/fonts/<slug>/auto_pin/meta.json`,
+  - `output/prod/fonts/_reports/auto_pin_batch_report.json`.
+- Важный operational note:
+  - первый запуск до установки Chromium падал на `BrowserType.launch: Executable doesn't exist`,
+  - после `playwright install chromium` парсинг Creative Fabrica работает.
+
+- Добавлен продовый запуск первых товаров Creative Fabrica через новый CLI `prod-auto-pin`:
+  - новый модуль: `prod_auto_pin_pipeline.py`.
+  - команда:
+    - `python run.py prod-auto-pin --niche fonts --limit 20 --output ./output/prod/fonts --sync-sheet`
+  - пайплайн:
+    - парсит категорию через существующий `parse_category`,
+    - берёт первые `limit` товаров,
+    - скачивает preview-картинки в `output/prod/fonts/_input`,
+    - прогоняет `auto-pin`,
+    - обогащает `auto_pin_batch_report.json` реальными `title/image_url/cf_url/affiliate_url/slug`,
+    - при `--sync-sheet` делает upsert в Google Sheet.
+- Улучшен sync в `sheets.py`:
+  - при наличии данных товара в отчёте таблица теперь получает реальные `title`, `image_url`, `cf_url`, `affiliate_url`,
+  - fallback по slug остаётся только для старых/тестовых отчётов без product metadata.
+- Первый prod-run выявил локальную проблему SSL при скачивании картинок с CDN Creative Fabrica:
+  - парсер успешно нашёл `84` товара на странице fonts,
+  - первые `20` были выбраны,
+  - скачивание preview упало на `CERTIFICATE_VERIFY_FAILED`.
+- Исправление:
+  - в `prod_auto_pin_pipeline.py` downloader preview использует отдельный SSL context для CDN-картинок,
+  - остальная логика парсинга/Sheets не менялась.
+
+- Добавлена автоматическая выгрузка результатов `auto-pin` в Google Sheets (upsert по `slug`):
+  - новый CLI:
+    - `python run.py sync-auto-pin --report ./test/extractor/output/_reports/auto_pin_batch_report.json --tab fonts`
+  - новый метод в `sheets.py`: `upsert_auto_pin_report(...)`.
+  - логика:
+    - читает `auto_pin_batch_report.json`,
+    - обновляет существующие строки и добавляет новые по `slug`,
+    - дополняет таблицу новыми колонками (без удаления старых),
+    - сохраняет/не затирает критичные публикационные поля (`posted`, `pin_id`, `published_at`).
+- Для выгрузки добавлены рабочие поля (авто-добавляются в header, если отсутствуют):
+  - `pin_path`, `mode`, `template_used`, `hook_enabled`, `hook_text`,
+  - `publish_status`, `published_at`, `error_reason`.
+- Исправлена безопасность работы с header в `ensure_tabs`:
+  - вместо `insert_row` на 1-ю строку теперь делается `update` header-диапазона,
+  - это предотвращает сдвиг данных вниз при несовпадении заголовков.
+
+- Добавлен A/B режим hook-текста в `auto-pin`:
+  - примерно 50% пинов в батче получают текстовый блок `hook + CTA`,
+  - выбор детерминированный по списку файлов (стабильный результат при повторных прогонах),
+  - в `meta.json` теперь сохраняются поля:
+    - `hook_enabled`
+    - `hook_text`
+    - `cta_text`.
+- Убрана “пустота” композиции:
+  - увеличен масштаб карточек в шаблонах (`scale_pct`),
+  - увеличен допустимый размер объекта на холсте (`_paste_layout`),
+  - для no-text вариантов (`hook_enabled=false`) `top/bottom` автоматически уплотняются:
+    - объект центрируется,
+    - масштаб дополнительно увеличивается.
+- Улучшен рендер hook-текста:
+  - подключены системные шрифты (Arial/Helvetica fallback),
+  - адаптивный подбор размера под ширину строки,
+  - контрастные цвета по фону и читабельная подложка.
+- Контрольный прогон:
+  - `python run.py auto-pin --input ./test/extractor/input --output ./test/extractor/output`
+  - результат: `generated=11`, `rejected=0`, `hook_enabled=6 из 11`.
+
+- Исправлен авто-роутинг `auto-pin` для кейсов, где вместо верхнего preview выбирался нижний чёрный блок сайта:
+  - в `_detect_preview_bbox` добавлена защита от `lower-dark block`:
+    - если лучший кандидат находится слишком низко и слишком тёмный, ищется верхний альтернативный кандидат,
+    - если верхнего кандидата нет — применяется детерминированный fallback bbox для CF-подобной карточки (`x≈21%, y≈19.5%, w≈58%, h≈25.8%`).
+  - это исправило проблемные кейсы: `madelyn-heart`, `super-3`, `super-bubble-3`.
+- Исправлен `extract_mode` в `auto-pin`:
+  - extraction теперь запускается по `preview-crop`, а не по целому исходному скриншоту,
+  - это убрало сценарий, когда extraction цепляет нижний текстовый блок из полного изображения.
+- Ужесточены условия входа в `extract_mode` (чтобы не уходить в extract на пограничных кейсах):
+  - `quality >= 0.90`, `complexity <= 0.18`, `det_conf >= 0.78`, `blur >= 0.38`.
+  - из-за этого `mama-applique-embroidery-design-3` теперь корректно идёт через `card_mode`.
+- Повторный batch-run:
+  - `python run.py auto-pin --input ./test/extractor/input --output ./test/extractor/output`
+  - итог: `Processed=11 | generated=11 | rejected=0`.
+  - по отмеченным проблемным кейсам нижний чёрный блок больше не используется как главный объект.
+
+- Реализован новый полностью автоматический пайплайн пинов: `auto-pin` (без ручных решений в цикле).
+  - Новый модуль: `auto_pin_pipeline.py`.
+  - Новая команда CLI:
+    - `python run.py auto-pin --input <file_or_dir> --output <output_root>`
+  - Выход по каждому объекту:
+    - `output/<font_id>/auto_pin/pin_01.png`
+    - `output/<font_id>/auto_pin/pin_01.jpg`
+    - `output/<font_id>/auto_pin/meta.json`
+  - Batch-отчёт:
+    - `output/_reports/auto_pin_batch_report.json`
+- Что делает `auto-pin` автоматически:
+  - детектит `bbox` preview-блока (`_detect_preview_bbox`),
+  - считает метрики `complexity_score`, `quality_score`, blur/confidence,
+  - выбирает режим: `extract_mode` / `card_mode` / `fallback_mode` / `reject_mode` по формальным порогам,
+  - выбирает `style`, `template`, `layout` и тему фона,
+  - собирает финальный pin `1000x1500` и сохраняет метаданные.
+- Реализованы 5 шаблонов компоновки:
+  - `centered_card`, `top_card`, `bottom_card`, `sticker_center`, `framed_catalog`.
+- Для `extract_mode` добавлена автоматическая проверка успешности extraction:
+  - проверка foreground ratio, edge-noise ratio, ширины объекта и минимальной читаемости;
+  - при провале extraction — автоматический переход в `card_mode`.
+- Smoke-run нового пайплайна:
+  - `python run.py auto-pin --input ./test/extractor/input --output ./test/extractor/output`
+  - итог: `Processed=11 | generated=11 | rejected=0`.
+
+- Стабилизирован основной `script-first` extractor под большой батч (без зависаний):
+  - `rembg`-ensemble отключён по умолчанию (переменная `EXTRACTOR_REMBG_MODELS` теперь пустая в default),
+  - heavy-model fallback остаётся опциональным через env, но не тормозит основной поток.
+- Улучшена чистка маски для сложных карточек:
+  - добавлен фильтр `_suppress_dense_background_blobs` (градиентный trim внутри маски), чтобы не тащить большие заливки фона рядом с буквами,
+  - добавлен `_remove_frame_like_components` для удаления рамок/скобок и тонких артефактов по краям,
+  - edge-recovery в `_finalize_text_mask` ограничен `text-like` пикселями (тёмные/насыщенные), чтобы фоновые текстуры не “прилипали” к маске.
+- Добавлен новый кандидат маски `dark_script`:
+  - ориентирован на тёмный/контрастный шрифт на светлой плашке с белой обводкой,
+  - включён в общий ансамбль выбора лучшей маски.
+- Ужесточён post-retry QC:
+  - `RETRY` больше не превращается автоматически в `PASS`,
+  - если после retry сохраняются сильные артефакты (`stroke_loss/noise/edge_artifact`), кейс переводится в `MANUAL_CHECK`.
+- Batch smoke-run после правок:
+  - `python3 run.py extract --input ./test/extractor/input --output ./test/extractor/output`
+  - итог: `Processed=11 | PASS=2 | MANUAL_CHECK=9`.
+  - это осознанно: лучше отправить спорные кейсы в ручную модерацию, чем публиковать плохой вырез.
+
+- Доработан publish quality после негативного фидбека по `sunshine-64`/`magnolia...`:
+  - в `font_publish_pipeline.py` добавлен `overlay sanitizer` (`_sanitize_overlay_for_publish`) перед композитом:
+    - детектит “blob”-артефакты (слишком большой залитый foreground с низкой плотностью контуров),
+    - для подозрительных случаев фильтрует оверлей до text-like пикселей (экстремумы по яркости + насыщенные участки),
+    - удаляет мелкие/угловые компоненты и оставляет главные центральные.
+  - это не меняет цвета букв, а только удаляет паразитные заливки, попавшие в alpha.
+- Улучшена читаемость по умолчанию:
+  - `target-width` в `publish-fonts` увеличен с `0.72` до `0.78` (более крупный wordmark на финальном кадре).
+- Smoke-перегенерация:
+  - `sunshine-64` и `magnolia-script-embroidery-font-small` пересобраны новой логикой через `publish-fonts --no-comfy`.
+
+- Добавлен новый production-модуль публикации: `font_publish_pipeline.py`.
+  - Цель: готовить publish-ready изображения по циклу:
+    1. script extraction (сохранение формы/цвета шрифта),
+    2. генерация уникального фона через ComfyUI (если доступен),
+    3. fallback на процедурный фон, если ComfyUI недоступен/отключён,
+    4. финальный композит `overlay + background` без деформации букв,
+    5. отчёты для контроля качества.
+  - Ключевой принцип сохранения уникальности шрифта:
+    - буквы НЕ регенерируются через AI,
+    - используется extracted overlay как source-of-truth (оригинальная форма и цвет).
+  - В pipeline добавлены:
+    - prompt для ComfyUI с запретом текста/логотипов на фоне,
+    - auto-readability слой (если контраст текста к фону низкий),
+    - batch-отчёты: `publish_batch_report.json/.csv`.
+- В `run.py` добавлена CLI-команда:
+  - `publish-fonts` — полный publish-cycle по файлу или папке.
+  - Пример:
+    - `python run.py publish-fonts --input ./test/extractor/input --output ./test/extractor/output --category fonts`
+  - Полезные флаги:
+    - `--no-comfy` (чисто скриптовые фоны),
+    - `--target-width` (масштаб wordmark на финальном холсте).
+- Smoke-test новой команды:
+  - `python run.py publish-fonts --input ./test/extractor/input/magic-unicorn.jpg --output ./test/extractor/output --category fonts --no-comfy`
+  - Результат:
+    - `publish_background.png`,
+    - `publish_final.png`,
+    - `publish_report.json`,
+    - `extract_qc=PASS`, читаемость (`readability_contrast_score`) сохранена.
+
+- Реализован узкий production-цикл для качества выреза (без ComfyUI):
+  1. `crop` до рабочей зоны (`_crop_working_zone_rgba`) — удаляем внешние чёрные поля.
+  2. Грубая маска букв (мульти-кандидаты) + LAB/HSV с отдельным захватом белой обводки рядом с цветными буквами.
+  3. Фильтр центрального главного объекта (`_keep_central_large_components`) по connected components:
+     - оставляем крупные центральные компоненты,
+     - удаляем мелкие/дальние/угловые островки.
+  4. Двухслойная alpha-маска:
+     - `core mask` (плотное тело букв),
+     - `soft mask` (мягкий край/обводка),
+     - сборка alpha через `core + soft` вместо одной жёсткой маски.
+  5. Decontaminate edges:
+     - этап антиореола сохранён и применяется до/после стандартизации.
+- В `rembg` включён alpha matting (с fallback на обычный режим при недоступности backend).
+- Итог на проблемных примерах:
+  - `magic-aspect`: маска стала одним центральным текстовым объектом (верхний декоративный мусор удалён),
+  - `magic-unicorn`: маска сведена к 1 центральному компоненту (удалены правый верх/низ и мелкие хвосты).
+
+- Уточнён приоритет качества выреза с сохранением исходных цветов:
+  - цвета/градиенты букв НЕ убираются (не переводим в ч/б),
+  - улучшаем только чистоту маски и качество края.
+- Доработан фильтр декоративных элементов в `extractor.py`:
+  - исправлен сценарий, где вторая строка названия (например, `aspect`) ошибочно считалась “нижним мусором”,
+  - верхний декор (плашки, звезды, изолированные иконки вне основного x-диапазона текста) теперь удаляется агрессивнее,
+  - при этом сохраняется защита от перерезания реальной второй текстовой строки.
+- Локальная проверка:
+  - `magic-aspect`: удалены верхние декоративные элементы, в маске остаётся основной wordmark-блок (3 крупных компонента),
+  - `magic-unicorn`: основной текст сохраняется, цвета букв сохраняются, качество края улучшено anti-halo/soft-alpha.
+
+- Зафиксирован приоритет на `script-first` пайплайн (без ComfyUI в основном потоке):
+  - основной extraction выполняется скриптовыми методами,
+  - ComfyUI оставлен как отложенная задача “на потом”, без включения в текущий runtime.
+- В `extractor.py` внедрён multi-candidate script pipeline:
+  - добавлены новые кандидаты масок: `threshold_otsu`, `adaptive_threshold`, `lab_hsv_separation`, `color_key` (для simple background),
+  - добавлен анализ исходника (`_analyze_source_profile`: `simple_bg/contrast/texture`) для более адекватного выбора режима.
+- Улучшен автоматический выбор лучшей маски:
+  - `_score_mask` теперь учитывает не только долю foreground, но и структуру компонент/контуров + профиль исходника.
+- Улучшен рендер финального оверлея:
+  - добавлен anti-halo этап (`_decontaminate_edge_rgb`) перед и после стандартизации на `1500x1500`,
+  - сохранён мягкий alpha edge (feather) для более чистого наложения на фон.
+- Быстрая проверка после фиксации script-first:
+  - `maddison-4`: `PASS` без `manual_check`,
+  - `super-3`: остаётся `MANUAL_CHECK` (сложный кейс), что ожидаемо.
+
+- Для кейса `maddison-4` улучшено качество маски под наложение на новый фон:
+  - добавлен фильтр primary wordmark (`_keep_primary_wordmark_components`) для приоритета главного названия шрифта,
+  - добавлен финальный post-filter (`_drop_lower_decorative_components`) для удаления нижних декоративных блоков (цветы/подписи), если они детектятся как отдельные крупные компоненты,
+  - защитная логика: нижний срез включается только при явном сигнале “крупный нижний декор”, чтобы не ломать обычные шрифты.
+- В `render_and_qc` добавлен дополнительный guard на уже стандартизированном `1500x1500` canvas:
+  - повторная чистка `canvas_mask`,
+  - повторная сборка soft-alpha из финальной маски перед сохранением `extracted_overlay.png`.
+- По тесту `maddison-4`:
+  - маска очищена от нижнего декоративного блока, остаётся основной wordmark,
+  - extraction проходит без `manual_check`.
+- Batch smoke-test после правок:
+  - `Processed=11 | PASS=7 | MANUAL_CHECK=4` (ручная модерация остаётся для сложных кейсов: `mama-*`, `super-*`).
+
+- Возврат к script-only подходу для генерации шрифта:
+  - в `font_generator.py` режимы `full_regen/hybrid` больше не запускают AI regeneration,
+  - любые запросы этих режимов автоматически приводятся к `signature_lock`,
+  - в `font_generation_report.json` это явно фиксируется:
+    - `effective_mode=signature_lock`,
+    - `used_fallback=true`,
+    - `fallback_reason=ai_regen_disabled_script_only`.
+- Улучшена финальная постобработка маски в `extractor.py`:
+  - добавлен этап `_finalize_text_mask`:
+    - удаление мусора по границам,
+    - восстановление тонких штрихов через edge-recovery рядом с найденной маской,
+    - морфологическая стабилизация и удаление мелких артефактов.
+  - улучшен soft-alpha (`_soft_alpha_from_binary_mask`):
+    - внутри букв альфа теперь 255 (чётче глиф),
+    - антиалиас вынесен в внешний edge-band для менее “пиксельного” контура.
+- Smoke-test после изменений:
+  - `python3 run.py extract --input ./test/extractor/input --output ./test/extractor/output`
+  - итог: `Processed=11 | PASS=9 | MANUAL_CHECK=2` (сложные кейсы остаются в ручной контроль).
+
+- Ужесточён `full_regen/hybrid` в `font_generator.py` для борьбы с плохими генерациями (кейс: белая `H` на белом фоне):
+  - добавлены структурные quality-gates между исходным и regen-оверлеем:
+    - минимум похожести `aHash` (`REGEN_MIN_SIMILARITY`, default `0.62`),
+    - проверка совпадения пропорций bbox (`REGEN_MIN_ASPECT_RATIO_MATCH`, default `0.55`),
+    - проверка совпадения доли foreground (`REGEN_MIN_FOREGROUND_RATIO_MATCH`, default `0.35`),
+    - проверка сопоставимости числа компонент (`REGEN_MIN_COMPONENT_RATIO_MATCH`, default `0.20`).
+  - если любой gate не проходит, режим автоматически уходит в `signature_lock` fallback с явной причиной в `font_generation_report.json`.
+- Усилены промпты для Comfy в `full_regen`:
+  - positive: акцент на `full readable word`, `flat 2d lettering`, `high-contrast dark text`.
+  - negative: добавлены `single letter`, `white text on white background`, `embossed text`, `3d text`.
+- Таймаут ожидания Comfy вынесен в переменную окружения:
+  - `COMFY_TIMEOUT_SEC` (default `180`).
+- В `font_generation_report.json` теперь пишутся используемые пороги (`regen_*`) и `comfy_timeout_sec` для прозрачной диагностики.
+
+- Создана отдельная экспериментальная ветка: `codex/signature-lock-comfy-experiment` для безопасной проверки нового подхода с возможностью отката.
+- Проверен текущий ComfyUI workflow `DreamShaperXL.json`:
+  - это `txt2img` граф (`EmptyLatentImage -> KSampler -> VAEDecode -> SaveImage`),
+  - исходное превью шрифта в граф не подаётся,
+  - значит текущий workflow генерирует новый визуал, но не гарантирует похожесть на исходный продаваемый шрифт.
+- Для режима “уникальный, но похожий” в следующей итерации нужен `signature-lock`:
+  - выделяем главный текст/wordmark из исходника,
+  - в ComfyUI генерируем только фон (negative prompt: `text/letters/words`),
+  - поверх фона накладываем исходный signature-слой без деформации.
+- Стартован модуль генерации шрифта: `font_generator.py`.
+  - Добавлены режимы: `signature_lock`, `full_regen`, `hybrid`.
+  - На текущем этапе стабильно реализован `signature_lock`:
+    - используется extracted overlay как source-of-truth для формы букв,
+    - сохраняется `generated_wordmark.png`,
+    - применяются базовые readability-эффекты (soft shadow/glow) без деформации глифов.
+  - `full_regen` и `hybrid` пока работают через fallback на `signature_lock` с явной записью в отчёт.
+- В CLI добавлена команда генерации:
+  - `python run.py generate-font --input <preview> --font-name "<name>" --category <niche> --mode <signature_lock|full_regen|hybrid> --output <dir>`
+- Для генерации добавлен отчёт:
+  - `output/<font_id>/font_generation_report.json` (requested/effective mode, fallback, пути артефактов).
+- Smoke-test команды `generate-font` на `super-3.jpg` выполнен успешно.
+- Реализован реальный `full_regen` через ComfyUI API в `font_generator.py`:
+  - загружается workflow из `COMFY_WORKFLOW_PATH` (по умолчанию `/Users/nick/Downloads/DreamShaperXL.json`),
+  - positive/negative prompts подставляются программно,
+  - генерация отправляется в `COMFY_URL/prompt`, результат забирается из `/history` + `/view`.
+- Логика режимов после обновления:
+  - `signature_lock`: стабильный режим (без Comfy),
+  - `full_regen`: пытается реальную генерацию, при сбое уходит в `signature_lock` fallback,
+  - `hybrid`: пытается `full_regen`, при fail/similarity-gate fallback в `signature_lock`.
+- В `font_generation_report.json` теперь пишется:
+  - `comfy_url`, `comfy_workflow_path`, `similarity_score`,
+  - корректные `requested_mode` / `effective_mode` / `fallback_reason`.
+- Актуальный smoke-run:
+  - `requested_mode=full_regen`,
+  - `effective_mode=signature_lock`,
+  - `fallback_reason=comfy_timeout` (Comfy не вернул результат в таймауте).
+
+## Изменения 2026-05-01
+
+### Android phone automation (ветка `feature/android-phone-automation`)
+
+**Проблема:** n8n выдавал ошибку "The column 'publish_status' could not be found" — в Google Sheet отсутствовала строка заголовков во вкладке `fonts`.
+
+**Фикс:** добавлен `fix_headers.py` — вставляет правильный 22-колоночный header в нужные вкладки без потери данных. Запустить один раз: `python fix_headers.py`.
+
+**Полная схема колонок Google Sheet (fonts и аналогичных вкладок):**
+```
+title | image_url | cf_url | affiliate_url | slug | posted | pin_id | created_at |
+pin_path | mode | template_used | hook_enabled | hook_text |
+publish_status | published_at | error_reason |
+public_image_url | remote_image_path | vds_upload_status | uploaded_at |
+cleanup_status | cleanup_at
+```
+
+---
+
+### Новые файлы для автоматизации через Android телефоны
+
+**Ветка:** `feature/android-phone-automation`
+
+**Файлы:**
+- `phone_manager.py` — ADB утилиты: обнаружение устройств, push/download изображений
+- `pinterest_post.py` — публикация пина через Pinterest Android app (uiautomator2, без LLM)
+- `pinterest_warmup.py` — прогрев аккаунта: скролл, сохранение пинов (uiautomator2, без LLM)
+- `run_phones.py` — CLI точка входа
+
+**Команды:**
+```bash
+python run_phones.py devices                 # показать подключённые телефоны
+python run_phones.py post --tab fonts        # опубликовать следующий ready пин
+python run_phones.py warmup                  # прогрев (скролл + сохранить пины)
+python run_phones.py post --device SERIAL    # конкретный телефон
+```
+
+**Зависимости:**
+```bash
+pip install uiautomator2 droidrun==0.4.26
+python -m uiautomator2 init  # установить сервер на телефон (один раз!)
+```
+
+**Переменные в `.env`:**
+```env
+PHONE_ACCOUNTS={"2fb582767d26": "account1", "SERIAL2": "account2"}
+OLLAMA_URL=http://localhost:11434   # не нужен для warmup (оставлен для будущего)
+OLLAMA_MODEL=qwen3:4b
+```
+
+---
+
+### Верифицированный UI flow Pinterest (Android 8.1, русская локаль)
+
+**Постинг (`pinterest_post.py`):**
+1. `com.pinterest:id/menu_creation` → тап кнопки Создать
+2. `com.pinterest:id/action_button_label` text="Пин" → выбор типа
+3. Диалог разрешений (РАЗРЕШИТЬ ×2-3) → Pinterest открывает камеру
+4. `d.press("back")` → возврат в MediaGalleryActivity (галерея)
+5. Тап `gallery_title` → album picker → выбрать "PinterestBot"
+6. В альбоме: `items[0]`=камера, `items[1]`=сайт, `items[2]`=наш JPG → тап items[2]
+7. `gallery_next_gestalt_button` или text="Далее" → CreationActivity
+8. `editor_title` → заголовок (из hook_text или title)
+9. Скролл вниз → `editor_description` → affiliate_url
+10. text="Далее" (toolbar) → board picker (`board_section_picker_board_cell`)
+11. Тап доски "Fonts" → публикация → toast "Отличный пин!" → text="Готово"
+12. Обновление Google Sheet: `publish_status=published`, `posted=TRUE`, `published_at`
+
+**Изображения хранятся на телефоне в:**
+```
+/sdcard/DCIM/PinterestBot/
+```
+Папка создаётся автоматически, файл удаляется после публикации.
+
+**Прогрев (`pinterest_warmup.py`):**
+- 3 сценария с весами: scroll+save (60%), search (25%), notifications (15%)
+- Рандомные тайминги `_human_sleep(lo, hi)`, рандомный x-offset свайпа
+- Занимает ~60 секунд на сессию
+- **TODO:** добавить более "живые" поведения (открытие пина, чтение, иногда follow)
+
+**Почему не DroidRun:**
+- DroidRun 0.4.26 ожидает `com.droidrun.portal`, актуальный Portal APK — `com.mobilerun.portal`
+- Package name mismatch → ContentProvider недоступен → agent не может читать состояние экрана
+- uiautomator2 решает задачу надёжнее и быстрее без LLM
+
+---
+
+### Контекст после лимитов (быстрый рестарт)
+1. Ветка эксперимента: `codex/signature-lock-comfy-experiment`.
+2. Проверочный запуск:
+   - `python run.py generate-font --input ./test/extractor/input/super-3.jpg --font-name "Super Font" --category fonts --mode signature_lock --output ./test/extractor/output`
+3. Следующий шаг реализации:
+   - подключить реальный `full_regen` через ComfyUI workflow без fallback,
+   - в `hybrid` включить цепочку `full_regen -> signature_lock` при fail similarity/QC.
+- Внедрён универсальный `QC rule-engine` для масштабной пакетной обработки:
+  - новые QC-метрики в отчёте: `noise_score`, `stroke_loss_score`, `edge_artifact_score`, `component_count`,
+  - решение по каждому файлу: `qc_decision` (`PASS` / `RETRY` / `MANUAL_CHECK`),
+  - `retry_count` фиксируется в результате и отчётах.
+- Добавлена `retry policy`:
+  - для пограничных кейсов выполняется один автоповтор с расширенным набором масок (`plain_mode_aggressive`, `plain_mode_conservative`, `strict_retry`),
+  - после retry пограничный кейс принимается как `PASS` для сохранения throughput, а жёстко плохие — в `MANUAL_CHECK`.
+- Добавлен `batch evaluator` для тысяч файлов:
+  - автоматически создаются отчёты `output/_reports/extractor_batch_report.json` и `.csv`,
+  - есть сводка: `pass_rate`, `manual_check_rate`, `by_extraction_mode`, счётчики `pass/retry/manual`.
+- CLI-сводка `run.py extract` обновлена:
+  - выводит `Processed | pass | retried | manual_check`.
+- Smoke benchmark на текущем тест-наборе:
+  - `total=11`, `pass=9`, `manual_check=2`, `pass_rate=0.8182`, `manual_check_rate=0.1818`.
+- Внедрён `extractor v2` с несколькими стратегиями маски вместо одного пути:
+  - `plain_mode` (общая сегментация текста),
+  - `card_mode` (работа через ROI карточки превью),
+  - `rembg_rect_refined` / `strict_fallback` как дополнительные fallback-ветки.
+- Добавлен `small-image boost` для малых изображений:
+  - автоматический upscale (`x2/x3`) перед сегментацией,
+  - обратный downscale маски после очистки.
+- Добавлена ансамблевая логика выбора лучшей маски:
+  - кандидаты из CV + rembg,
+  - эвристический скоринг масок (`_score_mask`),
+  - штраф за “залитый прямоугольник” и фильтрация до “главного текста”.
+- Усилен quality-control для MVP:
+  - в отчёте сохраняется `extraction_mode`,
+  - спорные маски продолжают отправляться в `manual_check`.
+- Внедрён стандартный мастер-формат оверлея: `1500x1500` в `extractor.py`.
+- Для каждого extracted оверлея теперь сохраняются техполя для композиции:
+  - `overlay_size`,
+  - `bbox_px` и `bbox_norm`,
+  - `recommended_scale_pct`.
+- Добавлен цветовой профиль шрифта для автоподбора фона:
+  - `font_colors.dominant_colors` (топ-палитра),
+  - `is_multicolor`,
+  - `lightness_score`,
+  - `mean_color`, `median_color`,
+  - `contrast_hint` (`use_dark_bg` / `use_light_bg` / `use_mid_bg`).
+- Эти поля записываются в `extraction_report.json` и готовы для использования на этапе генерации/подбора фона.
+- Для кейсов типа `super-3.jpg` (цветные/чёрные буквы на карточке) доработан `extractor.py`:
+  - в ROI карточки добавлена color-aware сегментация (HSV: насыщенные + тёмные пиксели),
+  - добавлена фильтрация мелких компонентов (убирает лишние артефакты и служебный шум),
+  - сохранён fallback на строгий `letters-only` режим при провале rembg.
+- Улучшено качество краёв оверлея:
+  - alpha-канал формируется как мягкий edge-band (anti-alias), чтобы уменьшить “пиксельность” контура букв,
+  - фон вне букв принудительно остаётся прозрачным.
+- Усилен `extractor.py` для реальных пинов с центральной карточкой:
+  - детект “ложного” результата rembg теперь учитывает плотность крупнейшего компонента внутри его bbox (а не только общий foreground_ratio),
+  - при детекте карточки включается режим `letters-only` внутри ROI карточки (цветные/тёмные символы), чтобы вырезать фон плашки,
+  - добавлен дополнительный fallback на строгую CV-маску.
+- Исправлено поведение сохранения артефактов:
+  - актуальные `extracted_overlay.png`, `mask.png`, `extraction_report.json` всегда перезаписываются в `output/<font_id>/`,
+  - при `manual_check` дополнительно сохраняются копии в `output/<font_id>/manual_check/`.
+- Улучшен `extractor.py` для кейса, когда вместо букв сохраняется прямоугольник с фоном:
+  - добавен детектор неудачной маски (`full rectangle`),
+  - добавлен строгий fallback `only letters` на OpenCV (анализ цвета границ + Otsu + удаление компонентов, касающихся рамки),
+  - при сбое/недоступности `rembg` экстракция теперь продолжает работу через CV-only путь.
+- Исправлена проблема запуска `extractor`: для `rembg` добавлена отсутствовавшая runtime-зависимость `onnxruntime`.
+- Обновлён `requirements.txt`: добавлен `onnxruntime==1.24.4`.
+- Добавлен новый модуль `extractor.py` для вырезания фона из превью шрифтов без генеративной перерисовки глифов.
+- Используется связка `rembg + OpenCV`: сначала сегментация фона, затем мягкая очистка маски для сохранения формы шрифта.
+- Для каждого изображения сохраняются:
+  - `extracted_overlay.png` (прозрачный оверлей),
+  - `mask.png` (бинарная маска),
+  - `extraction_report.json` (метрики качества и решение по ручной проверке).
+- Добавлен автоматический флаг `manual_check` при низком `quality_score` или подозрительном размере foreground.
+- Обновлён `requirements.txt`: добавлены `rembg`, `opencv-python`, `numpy`.
+- В `run.py` добавлена команда `extract`:
+  - `python run.py extract --input <file_or_dir> --output output`
+  - Команда запускает `extractor` пакетно и показывает сводку по количеству `manual_check`.
+- Добавлен изолированный тестовый контур для экстрактора:
+  - `test/extractor/input/` — входные тестовые изображения (1-2 файла для быстрой проверки),
+  - `test/extractor/output/` — результаты экстракции для теста.
+- Добавлена инструкция запуска в `test/extractor/README.md`.
+- Обновлён `.gitignore`: `test/extractor/output/` исключён из git, чтобы не коммитить тестовые артефакты.
+
+---
+
+## 📋 Краткое описание проекта
+
+**Цель:** Автоматический парсинг товаров Creative Fabrica → генерация Pinterest-пинов → запись в Google Sheets
+
+**Технологии:**
+- Playwright (headless Chrome) — обход Cloudflare
+- ComfyUI + Stable Diffusion — уникализация изображений (опционально)
+- Pillow — наложение текста и графики
+- Google Sheets API — хранение данных
+- Docker + cron — запуск на любом устройстве
+- GitHub Actions — ежедневный cron в 09:00 UTC (альтернатива)
+
+**Статус:** Production-ready, работает в автоматическом режиме
+
+---
+
+## 🏗️ Архитектура проекта
+
+```
+main.py                 — точка входа, оркестрация всего процесса
+├── parser.py           — Playwright-скрапер (КРИТИЧНО: новый браузер на каждую страницу!)
+├── comfy_processor.py  — ComfyUI img2img + Pillow overlay → output/{slug}.jpg
+├── image_processor.py  — legacy Pillow-only (не используется в main.py)
+├── sheets.py           — Google Sheets: auth, dedup, write
+└── config.py           — все константы из .env
+```
+
+### Поток данных:
+
+```
+1. parse_category() → Playwright открывает CF категорию
+   ↓ JS-скрипт извлекает: slug, title, image_url, cf_url
+   
+2. process_products() → для каждого товара:
+   ↓ скачать image_url
+   ↓ если ComfyUI доступен → img2img (denoise 0.5)
+   ↓ Pillow overlay: title + niche badge + CTA
+   ↓ сохранить в output/{slug}.jpg
+   
+3. append_products() → записать в Google Sheets
+   ↓ get_existing_slugs() — проверка дублей
+   ↓ append_rows() — только новые товары
+```
+
+---
+
+## 🔑 Критические особенности (НЕЛЬЗЯ МЕНЯТЬ!)
+
+### 1. Новый браузер на каждую страницу
+```python
+# parser.py:89
+browser = pw.chromium.launch(headless=True)  # ВНУТРИ цикла for page_num
+```
+**Почему:** CF rate-limit блокирует повторные запросы из одной сессии.
+**Если изменить:** страницы 2+ вернут 403 или пустой результат.
+
+### 2. Скролл перед wait_for_selector
+```python
+# parser.py:111-113
+for scroll_pos in [300, 600, 1000, 1500, 2500, 4000]:
+    page_obj.evaluate(f"window.scrollTo(0, {scroll_pos})")
+    page_obj.wait_for_timeout(400)
+```
+**Почему:** embroidery/bundles/laser-cutting используют lazy-load.
+**Если убрать:** эти категории вернут 0 товаров.
+
+### 3. JS-экстрактор с noscript-фиксом
+```python
+# parser.py:38-46
+if rawText.startsWith('<'):
+    const altMatch = rawText.match(/alt="([^"]+)"/);
+    title = altMatch ? altMatch[1] : (img ? img.alt : '');
+```
+**Почему:** некоторые категории оборачивают `<img>` в `<noscript>`, textContent возвращает сырой HTML.
+**Если убрать:** title будет `<img src="..." alt="Product Name" />` вместо "Product Name".
+
+### 4. Трёхуровневая дедупликация
+```
+Уровень 1: JS seen Set (parser.py:23, _EXTRACT_JS)
+Уровень 2: Python seen_slugs (parser.py:81)
+Уровень 3: get_existing_slugs() перед записью (sheets.py:63)
+```
+**Результат:** один товар НИКОГДА не попадёт в шит дважды.
+
+---
+
+## 📦 Зависимости
+
+```txt
+playwright==1.49.1       # headless Chrome
+Pillow==10.3.0           # image processing
+gspread==6.1.2           # Google Sheets API
+google-auth==2.30.0      # service account auth
+requests==2.32.3         # HTTP requests
+python-dotenv==1.0.1     # .env loader
+beautifulsoup4==4.12.3   # HTML parsing (вспомогательно)
+```
+
+**После установки обязательно:**
+```bash
+playwright install chromium
+```
+
+---
+
+## 🔐 Переменные окружения (.env)
+
+```env
+# Обязательные
+GOOGLE_SHEET_ID=1h6ZYtQUwT77z66-feJMZD84XIwIFmy83ClMy-_iWbWg
+CF_AFFILIATE_ID=7029352
+GOOGLE_CREDENTIALS_PATH=credentials.json
+
+# Опциональные
+PAGES_PER_RUN=3                              # страниц на категорию
+MIN_DELAY=2                                  # секунд между страницами
+MAX_DELAY=5
+
+# ComfyUI (если не запущен — автофолбэк на Pillow-only)
+COMFY_URL=http://127.0.0.1:8188
+COMFY_MODEL=realisticVisionV51.safetensors
+COMFY_DENOISE=0.50                           # 0.4-0.65 рекомендуется
+COMFY_STEPS=20
+COMFY_CFG=7.0
+```
+
+---
+
+## 📊 Google Sheets структура
+
+**Вкладки (7 шт):**
+```
+fonts | graphics | 3d-svg | 3d-printing | embroidery | laser-cutting | bundles
+```
+
+**Колонки (8 шт):**
+```
+title | image_url | cf_url | affiliate_url | slug | posted | pin_id | created_at
+```
+
+- `slug` — ключ дедупликации
+- `posted` — FALSE по умолчанию, TRUE после публикации
+- `pin_id` — заполняется Pinterest-постером
+- `created_at` — UTC timestamp
+
+---
+
+## 🎯 Категории Creative Fabrica
+
+```python
+CATEGORIES = {
+    "fonts":         "https://www.creativefabrica.com/fonts/",
+    "graphics":      "https://www.creativefabrica.com/graphics/",
+    "3d-svg":        "https://www.creativefabrica.com/3d-svg/",
+    "3d-printing":   "https://www.creativefabrica.com/3d-printing/",
+    "embroidery":    "https://www.creativefabrica.com/embroidery/",
+    "laser-cutting": "https://www.creativefabrica.com/laser-cutting/",
+    "bundles":       "https://www.creativefabrica.com/bundles/",
+}
+```
+
+**Формат пагинации:**
+- Страница 1: `https://www.creativefabrica.com/fonts/`
+- Страница 2+: `https://www.creativefabrica.com/fonts/page/2/`
+
+**Товаров на странице:**
+- Страница 1 fonts: ~84 (Popular + New секции)
+- Страница 1 graphics: ~32
+- Страницы 2+: ~36 каждая
+
+---
+
+## 🖼️ Обработка изображений
+
+### Размер Pinterest-пина
+```python
+PIN_W, PIN_H = 1000, 1500  # соотношение 2:3
+```
+
+### Композиция пина
+```
+┌─────────────────────────┐
+│                         │
+│   Верх 65% (975px)      │ ← AI-обработанное изображение товара
+│   Product Image         │   (или оригинал, если ComfyUI недоступен)
+│                         │
+├─────────────────────────┤ ← оранжевая линия (accent)
+│ [NICHE BADGE]           │
+│                         │
+│ Product Title           │ ← тёмный фон (30,30,30)
+│ (wrapped, bold 50px)    │
+│                         │
+│ Free Today with         │ ← оранжевый CTA
+│ All Access              │
+│                         │
+│         creativefabrica │ ← брендинг (серый, справа)
+└─────────────────────────┘
+   Низ 35% (525px)
+```
+
+### ComfyUI workflow
+```python
+CheckpointLoaderSimple → model: realisticVisionV51.safetensors
+LoadImage → uploaded CF image
+VAEEncode → latent
+KSampler:
+  - sampler: euler_ancestral
+  - scheduler: karras
+  - denoise: 0.50 (ключевой параметр!)
+  - steps: 20
+  - cfg: 7.0
+VAEDecode → result image
+```
+
+**Промпты по нишам:**
+```python
+NICHE_PROMPTS = {
+    "fonts": "professional font specimen poster, clean white background...",
+    "graphics": "digital art product mockup, clean background...",
+    # и т.д. — см. comfy_processor.py:53-82
+}
+```
+
+---
+
+## 🚀 Команды запуска
+
+### ⚡ Быстрый старт (Makefile)
+
+```bash
+# Полный парсинг (3 стр., все категории)
+make parse
+
+# Массовый сбор (50 стр.)
+make parse-50
+
+# Тест (1 стр. fonts)
+make test
+
+# Только одна категория
+make parse-fonts
+make parse-graphics
+make parse-3d-printing
+```
+
+### 🐳 Docker
+
+```bash
+# Разовый запуск
+make run
+
+# 50 страниц
+make run-50
+
+# Cron-демон
+make cron
+
+# Логи
+make logs
+```
+
+### 📋 Все команды
+
+```bash
+make help   # показать все команды
+```
+
+| Команда | Описание |
+|---------|----------|
+| `make parse` | Полный цикл: парсинг → пины → шит |
+| `make parse-50` | Массовый сбор (50 стр.) |
+| `make test` | Тест: 1 стр. fonts |
+| `make parse-fonts` | Только fonts |
+| `make pins` | Только генерация пинов |
+| `make run` | Docker: разовый запуск |
+| `make cron` | Docker: cron-демон |
+| `make logs` | Docker: логи демона |
+| `make clean` | Очистка пинов и кэша |
+
+---
+
+## 🧪 Тестирование компонентов
+
+### 1. Проверка Google Sheets подключения
+```python
+from sheets import get_sheet_client, test_connection
+spreadsheet = get_sheet_client()
+test_connection(spreadsheet)
+# Должно вывести: "Test write to '...'!A1 succeeded."
+```
+
+### 2. Проверка парсера (1 страница fonts)
+```python
+from parser import parse_category
+products = parse_category("https://www.creativefabrica.com/fonts/", "fonts", pages=1)
+print(f"Найдено товаров: {len(products)}")
+# Ожидается: ~84 товара
+```
+
+### 3. Проверка ComfyUI
+```python
+from comfy_processor import _comfy_available
+print(_comfy_available())
+# True — если ComfyUI запущен на http://127.0.0.1:8188
+```
+
+### 4. Проверка генерации пина
+```python
+from comfy_processor import create_pin
+path = create_pin(
+    title="Test Product",
+    image_url="https://example.com/image.jpg",
+    slug="test-product",
+    niche="fonts"
+)
+print(path)  # output/test-product.jpg
+```
+
+---
+
+## ⚠️ Известные проблемы и решения
+
+### Проблема: Timeout на embroidery/bundles
+**Причина:** CF rate-limiting или медленная загрузка lazy-load карточек
+**Решение:** Встроен retry (2 попытки с паузой 8 сек), затем skip категории
+
+### Проблема: ComfyUI возвращает ошибку "model not found"
+**Причина:** `COMFY_MODEL` в .env не совпадает с именем файла в `ComfyUI/models/checkpoints/`
+**Решение:** Проверить точное имя файла (с расширением .safetensors)
+
+### Проблема: SSL warning при старте
+```
+SSLEOFError: EOF occurred in violation of protocol
+```
+**Причина:** gspread иногда получает обрыв SSL при первом коннекте
+**Решение:** Это нормально, gspread автоматически ретраит. Игнорировать.
+
+### Проблема: Дубли в шите
+**Причина:** Невозможно при правильной работе (3 уровня дедупликации)
+**Диагностика:** Проверить логи — должно быть "Skipped (duplicates): N"
+
+---
+
+## 📁 Структура output/
+
+```
+output/
+├── 3d-wind-spinner-stl-3mf.jpg
+├── alina-monogram-font.jpg
+├── %f0%9f%8d%84-mushroom-birdhouse-fantasy-3d-print.jpg  ← URL-encoded emoji
+└── ...
+```
+
+**Формат имени:** `{slug}.jpg` (slug берётся из CF URL)
+**Размер:** 1000×1500 px, JPEG quality 92
+**Идемпотентность:** если файл существует — пропускается
+
+---
+
+## 🔄 GitHub Actions (автоматический режим)
+
+**Файл:** `.github/workflows/cron.yml`
+
+**Расписание:**
+```yaml
+schedule:
+  - cron: '0 9 * * *'  # 09:00 UTC ежедневно
+```
+
+**Секреты (Settings → Secrets):**
+```
+GOOGLE_CREDENTIALS    — полное содержимое credentials.json
+GOOGLE_SHEET_ID       — ID Google Sheet
+CF_AFFILIATE_ID       — 7029352
+```
+
+**Логи:** Actions → последний запуск → cf-parser job
+
+---
+
+## 🛠️ Частые задачи
+
+### Добавить новую категорию
+```python
+# config.py
+CATEGORIES = {
+    # ...существующие...
+    "new-category": "https://www.creativefabrica.com/new-category/",
+}
+```
+Вкладка в шите создастся автоматически.
+
+### Изменить affiliate ID
+```bash
+# .env (локально)
+CF_AFFILIATE_ID=новый_id
+
+# GitHub Actions
+Settings → Secrets → CF_AFFILIATE_ID → Update
+```
+
+### Пересоздать все изображения
+```bash
+rm -rf output/*
+python main.py
+```
+Шит не изменится (image_url хранит оригинальный CF CDN URL).
+
+### Запустить только одну категорию
+```python
+# config.py — временно закомментировать остальные
+CATEGORIES = {
+    "fonts": "https://www.creativefabrica.com/fonts/",
+    # "graphics": "...",  # закомментировано
+}
+```
+
+---
+
+## 📝 Чеклист перед запуском
+
+### Для Docker (рекомендуется):
+- [ ] Docker и Docker Compose установлены
+- [ ] `.env` создан и заполнен
+- [ ] `credentials.json` в корне проекта
+- [ ] Google Sheet создан и расшарен на `client_email` из credentials.json
+- [ ] Образ собран: `docker compose build`
+
+### Для локального запуска:
+- [ ] `pip install -r requirements.txt`
+- [ ] `playwright install chromium`
+- [ ] `.env` создан и заполнен
+- [ ] `credentials.json` в корне проекта
+- [ ] Google Sheet создан и расшарен на `client_email` из credentials.json
+
+### Опционально:
+- [ ] ComfyUI запущен с моделью в `models/checkpoints/`
+
+---
+
+## 🐛 Отладка
+
+### Включить debug-логи
+```python
+# main.py:11
+logging.basicConfig(level=logging.DEBUG)
+```
+
+### Проверить, что парсер видит на странице
+```python
+# parser.py:129 — добавить перед evaluate()
+page_obj.screenshot(path="debug.png")
+```
+
+### Проверить ComfyUI workflow вручную
+```bash
+curl http://127.0.0.1:8188/system_stats
+# Должен вернуть JSON с system.cpu_utilization и т.д.
+```
+
+---
+
+## 📚 Полезные ссылки
+
+- [Playwright Python Docs](https://playwright.dev/python/docs/intro)
+- [ComfyUI GitHub](https://github.com/comfyanonymous/ComfyUI)
+- [gspread Documentation](https://docs.gspread.org/)
+- [Google Cloud Console](https://console.cloud.google.com)
+- [Creative Fabrica](https://www.creativefabrica.com)
+
+---
+
+## 🎓 Контекст для AI-ассистентов
+
+**Если ты AI и читаешь этот файл:**
+
+1. **Никогда не меняй** логику создания нового браузера на каждую страницу (parser.py:89)
+2. **Никогда не удаляй** скролл перед wait_for_selector (parser.py:111-113)
+3. **Всегда сохраняй** трёхуровневую дедупликацию
+4. **Не создавай** новые markdown-файлы без явного запроса пользователя
+5. **Используй** существующие файлы для изменений (Edit, не Write)
+6. **Проверяй** наличие .env и credentials.json перед запуском
+7. **Помни:** ComfyUI опционален, fallback на Pillow-only встроен
+8. **Docker:** проект поддерживает Docker, есть два режима работы
+
+**Ключевые файлы для изменений:**
+- Логика парсинга → `parser.py`
+- Обработка изображений → `comfy_processor.py`
+- Работа с шитом → `sheets.py`
+- Константы → `config.py`
+- Оркестрация → `main.py`
+
+**Docker-файлы:**
+- `Dockerfile` — образ контейнера
+- `docker-compose.yml` — конфигурация сервисов (два режима)
+- `docker-entrypoint.sh` — entrypoint с поддержкой cron
+
+**Документация:**
+- `DOCKER.md` — полная Docker-документация
+- `DOCKER_QUICKSTART.md` — шпаргалка
+- `README.md` — основная документация
+- `CLAUDE.md` — подробные инструкции для AI
+- `INIT.md` (этот файл) — быстрый контекст
+
+---
+
+**Версия:** 2.0 (с Docker)  
+**Дата:** 2026-03-24  
+**Автор:** sshamanello  
+**Статус:** Production-ready

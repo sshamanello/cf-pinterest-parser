@@ -1,0 +1,14 @@
+[Unit]
+Description=CF Pinterest local media server
+After=network.target
+
+[Service]
+Type=simple
+User=nick
+WorkingDirectory=/home/nick/cf-pinterest-parser
+ExecStart=/usr/bin/python3 -m http.server 8088 --bind 0.0.0.0 --directory /home/nick/cf-pinterest-parser/published
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
